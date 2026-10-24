@@ -1,0 +1,23 @@
+# Extension signing key (private) — keep local so the extension ID stays stable
+extension-key.pem
+
+# Auto-generated indexed rulesets metadata
+_metadata/
+
+# Dependencies
+node_modules/
+
+# Playwright
+playwright-report/
+test-results/
+
+# Built packages
+dist/
+
+# Playwright MCP artifacts
+.playwright-mcp/
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+*.log

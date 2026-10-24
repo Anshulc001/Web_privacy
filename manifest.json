@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "WebGuard",
+  "version": "0.1.0",
+  "description": "Local privacy and security overview for the sites you visit.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2OcxGXDtQ+N9PrGI4CMSxqkC20t9Bs0FEkpi+54cvyBEiU7E8cRAOnLvljqZ7zD4oHQtJcOQ8Al0VLhGRaXT+gRkVtLiTN0Frx8XE7QbJAw5GnTq6gCSCw63ZGK61AAGc74EXMPadLMyFlvhFQ8nL8YXlMHqoe4g/m5rrqzDurJnBqShfWYXhXsK41U23POH/n1Y18O+WVFMQOzozbEFKQ5XBd0wgInG/ESF0DP0hfA0RlRyHa/h/wS12yud6e4sjkWiTTkmHpEPD+Fd9v8y7KkGnibDIVUyCIV16Vdy14njd4GVp1oOJV4/XaQnoVJDbgaRQeHkqI4W7/ivkHGv1wIDAQAB",
+  "action": {
+    "default_title": "WebGuard",
+    "default_popup": "popup/popup.html"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "declarative_net_request": {
+    "rule_resources": [{ "id": "ad_tracker_rules", "enabled": true, "path": "data/ad-tracker-rules.json" }]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "alarms",
+    "webNavigation",
+    "scripting",
+    "activeTab",
+    "cookies",
+    "declarativeNetRequest",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'self';"
+  }
+}

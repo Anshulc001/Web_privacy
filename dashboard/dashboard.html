@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WebGuard Dashboard</title>
+    <link rel="stylesheet" href="dashboard.css">
+  </head>
+  <body>
+    <header>
+      <h1>WebGuard</h1>
+      <p id="privacy-note">All data stays on this device. The only network calls are daily blocklist downloads and RDAP lookups you start yourself.</p>
+      <nav aria-label="Sections">
+        <a href="#overview">Overview</a>
+        <a href="#cookies">Cookies</a>
+        <a href="#permissions">Permissions</a>
+        <a href="#domain">Domain Info</a>
+        <a href="#ads">Ads &amp; Trackers</a>
+        <a href="#suspicious">Suspicious</a>
+        <a href="#breach">Breach &amp; OSINT</a>
+        <a href="#history">History</a>
+        <a href="#settings">Settings</a>
+      </nav>
+    </header>
+
+    <main>
+      <p id="status" role="status">Loading…</p>
+
+      <section id="site-picker" aria-labelledby="site-picker-heading">
+        <h2 id="site-picker-heading">Site</h2>
+        <label for="target-select">Show details for</label>
+        <select id="target-select"></select>
+        <button id="refresh-site" type="button">Refresh</button>
+        <p id="target-summary"></p>
+      </section>
+
+      <section id="overview" aria-labelledby="overview-heading">
+        <h2 id="overview-heading">Overview</h2>
+        <ul id="overview-stats"></ul>
+        <h3>Sites per day</h3>
+        <div id="chart-sites" class="chart"></div>
+        <h3>Blocked requests per day</h3>
+        <div id="chart-blocked" class="chart"></div>
+        <h3>Top blocked hosts</h3>
+        <div id="chart-trackers" class="chart"></div>
+        <h3>Data freshness</h3>
+        <ul id="data-status"></ul>
+      </section>
+
+      <section id="cookies" aria-labelledby="cookies-heading">
+        <h2 id="cookies-heading">Cookies</h2>
+        <p class="hint">Cookie values are never read, stored or shown.</p>
+        <p id="cookies-status"></p>
+        <ul id="cookies-list"></ul>
+      </section>
+
+      <section id="permissions" aria-labelledby="permissions-heading">
+        <h2 id="permissions-heading">Permissions</h2>
+        <p class="hint">Heuristic, not a verdict. A grant only means the site holds that permission.</p>
+        <ul id="permissions-list"></ul>
+        <p id="permissions-alerts"></p>
+        <button id="expected-toggle" type="button">Mark site as expected</button>
+      </section>
+
+      <section id="domain" aria-labelledby="domain-heading">
+        <h2 id="domain-heading">Domain Info</h2>
+        <p id="domain-summary"></p>
+        <button id="rdap-lookup" type="button">Look up RDAP</button>
+        <p class="hint" id="tls-note"></p>
+        <dl id="domain-details"></dl>
+      </section>
+
+      <section id="ads" aria-labelledby="ads-heading">
+        <h2 id="ads-heading">Ads &amp; Trackers</h2>
+        <p id="ads-status"></p>
+        <label><input id="blocking-toggle" type="checkbox"> Blocking enabled</label>
+        <p id="allowlist-status"></p>
+        <button id="allowlist-toggle" type="button">Allowlist this site</button>
+        <ul id="top-hosts"></ul>
+      </section>
+
+      <section id="suspicious" aria-labelledby="suspicious-heading">
+        <h2 id="suspicious-heading">Suspicious</h2>
+        <p id="risk-summary"></p>
+        <ul id="risk-reasons"></ul>
+        <p class="hint" id="risk-disclaimer"></p>
+      </section>
+
+      <section id="breach" aria-labelledby="breach-heading">
+        <h2 id="breach-heading">Breach &amp; OSINT</h2>
+        <p id="breach-summary"></p>
+        <ul id="breach-list"></ul>
+        <p class="hint">A match means this site appeared in a known breach. It does not mean your account was leaked.</p>
+        <p id="breach-attribution"></p>
+        <h3>Check your own email</h3>
+        <ul id="self-check-links"></ul>
+      </section>
+
+      <section id="history" aria-labelledby="history-heading">
+        <h2 id="history-heading">History</h2>
+        <p id="history-retention"></p>
+        <label for="history-date">Day</label>
+        <select id="history-date"></select>
+        <ul id="history-list"></ul>
+      </section>
+
+      <section id="settings" aria-labelledby="settings-heading">
+        <h2 id="settings-heading">Settings</h2>
+        <label for="retention-select">History retention</label>
+        <select id="retention-select"></select>
+        <label><input id="history-paused" type="checkbox"> Pause history recording</label>
+        <p id="settings-retention-note"></p>
+        <h3>Allowlisted sites</h3>
+        <ul id="allowlist-list"></ul>
+        <h3>Data</h3>
+        <ul id="settings-data"></ul>
+        <button id="clear-history" type="button">Clear history now</button>
+        <button id="clear-all" type="button">Clear all WebGuard data</button>
+        <p id="settings-feedback"></p>
+        <h3>Privacy</h3>
+        <p>WebGuard keeps everything local. It makes only two kinds of network request: the daily
+          blocklist downloads from the project's public repository, and RDAP lookups that you start
+          by pressing the button. There is no analytics, no telemetry and no account.</p>
+      </section>
+    </main>
+
+    <script type="module" src="dashboard.js"></script>
+  </body>
+</html>

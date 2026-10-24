@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WebGuard</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <h1>WebGuard</h1>
+      <p id="status">Loading current-site privacy details…</p>
+      <p id="blocking-status"></p>
+      <p id="blocking-data"></p>
+      <p id="blocking-top-hosts"></p>
+      <button id="blocking-toggle" type="button" hidden></button>
+      <button id="allowlist-toggle" type="button" hidden></button>
+      <section aria-labelledby="cookies-heading">
+        <h2 id="cookies-heading">Cookies</h2>
+        <ul id="cookies"></ul>
+      </section>
+      <section aria-labelledby="permissions-heading">
+        <h2 id="permissions-heading">Permissions</h2>
+        <ul id="permissions"></ul>
+        <p id="permission-alerts"></p>
+        <button id="expected-site" type="button" hidden></button>
+      </section>
+      <button id="open-dashboard" type="button">Open Dashboard</button>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
