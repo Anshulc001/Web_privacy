@@ -1,9 +1,171 @@
-:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-body { margin: 0; min-width: 320px; max-height: 580px; overflow-y: auto; }
-main { padding: 16px; }
-h1 { font-size: 1.25rem; margin: 0 0 8px; }
-h2 { font-size: 1rem; margin: 18px 0 6px; }
-p { margin: 0 0 16px; }
-ul { margin: 0; padding-left: 20px; }
-li { margin: 4px 0; overflow-wrap: anywhere; }
-button { cursor: pointer; font: inherit; padding: 8px 12px; }
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f8fb;
+  --surface: #ffffff;
+  --surface-2: #f1f4f9;
+  --border: #e2e7ef;
+  --border-strong: #ccd4e0;
+  --text: #111823;
+  --muted: #5a6472;
+  --accent: #1a5fd0;
+  --accent-soft: #e9f0fd;
+
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0f14;
+    --surface: #121821;
+    --surface-2: #18202b;
+    --border: #263241;
+    --border-strong: #35445a;
+    --text: #e8eef6;
+    --muted: #a3aec0;
+    --accent: #6aa9ff;
+    --accent-soft: #172740;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  max-height: 580px;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* header */
+
+.head {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 2px 2px 4px;
+}
+
+.mark {
+  grid-row: span 2;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+}
+
+h1 { margin: 0; font-size: 1.06rem; font-weight: 700; letter-spacing: -0.01em; }
+h2 { margin: 0 0 6px; font-size: 0.86rem; font-weight: 650; color: var(--text); }
+
+.sub { margin: 0; font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+
+/* cards */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+.hero { display: grid; gap: 4px; }
+
+.hero-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 2px;
+}
+
+/* A class rule outranks the UA rule for [hidden], so say it explicitly. */
+.hero-figure[hidden] { display: none; }
+.hero[hidden] { display: none; }
+
+#tab-count {
+  font-size: 1.85rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.hero-unit { font-size: 0.78rem; color: var(--muted); }
+
+.meta { margin: 0; font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+
+ul { margin: 0; padding: 0; list-style: none; }
+
+li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+li:last-child { border-bottom: none; padding-bottom: 0; }
+
+/* controls */
+
+.actions { display: grid; gap: 6px; margin-top: 10px; }
+
+button {
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 550;
+  cursor: pointer;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+button.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+button.btn-primary:hover { filter: brightness(1.06); color: #ffffff; background: var(--accent); }
+
+#expected-site { margin-top: 8px; }
+
+.foot { padding: 2px 0 4px; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

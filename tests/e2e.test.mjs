@@ -171,9 +171,11 @@ describe("WebGuard end to end", () => {
     await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
 
-    // Overview reflects the seeded browsing.
-    const overview = await page.locator("#overview-stats").innerText();
-    assert.ok(/Sites recorded: \d+/.test(overview), "overview should show a sites-recorded count");
+    // Overview reflects the seeded browsing. The tiles are stacked boxes, so the
+    // text may be split across lines; compare on normalized whitespace.
+    const overview = (await page.locator("#overview-stats").innerText()).replace(/\s+/g, " ");
+    assert.ok(/Sites recorded \d+/.test(overview), `overview should show a sites-recorded count, got "${overview}"`);
+    assert.ok(/Blocked today \d+/.test(overview), `overview should show a blocked count, got "${overview}"`);
 
     // Charts are real SVG with bars.
     const charts = await page.locator(".chart svg").count();
@@ -558,10 +560,20 @@ describe("WebGuard end to end", () => {
 
     // WCAG AA contrast for the text that carries the meaning of each section.
     const contrast = await page.evaluate(() => {
-      const toRgb = (value) => {
-        const parts = String(value).match(/[\d.]+/g)?.map(Number) ?? [];
-        return parts.length >= 3 ? parts.slice(0, 3) : null;
+      // Colours arrive as rgb(), rgba() or the modern color(srgb 0.96 ...) form,
+      // so parse both; reading raw digits out of the latter gives a false result.
+      const parse = (value) => {
+        const text = String(value);
+        const srgb = text.match(/color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?/i);
+        if (srgb) {
+          return { rgb: [1, 2, 3].map((index) => Math.round(Number(srgb[index]) * 255)), alpha: srgb[4] === undefined ? 1 : Number(srgb[4]) };
+        }
+        const legacy = text.match(/rgba?\(([^)]+)\)/i);
+        if (!legacy) return null;
+        const parts = legacy[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+        return parts.length >= 3 ? { rgb: parts.slice(0, 3), alpha: parts.length > 3 ? parts[3] : 1 } : null;
       };
+      const toRgb = (value) => parse(value)?.rgb ?? null;
       const channel = (value) => {
         const c = value / 255;
         return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
@@ -570,9 +582,8 @@ describe("WebGuard end to end", () => {
       const background = (node) => {
         let current = node;
         while (current) {
-          const value = getComputedStyle(current).backgroundColor;
-          const rgb = toRgb(value);
-          if (rgb && !/rgba\([^)]*,\s*0\)/.test(value)) return rgb;
+          const parsed = parse(getComputedStyle(current).backgroundColor);
+          if (parsed && parsed.alpha > 0) return parsed.rgb;
           current = current.parentElement;
         }
         return [255, 255, 255];
@@ -778,9 +789,9 @@ describe("WebGuard end to end", () => {
     );
     await page.waitForTimeout(1_000);
 
-    const overview = await page.locator("#overview-stats").innerText();
-    assert.ok(/Sites recorded: 0/.test(overview), `history must be empty after clearing, got: ${overview}`);
-    assert.ok(/Blocked today: 0/.test(overview), `counters must reset after clearing, got: ${overview}`);
+    const overview = (await page.locator("#overview-stats").innerText()).replace(/\s+/g, " ");
+    assert.ok(/Sites recorded 0/.test(overview), `history must be empty after clearing, got: ${overview}`);
+    assert.ok(/Blocked today 0/.test(overview), `counters must reset after clearing, got: ${overview}`);
     assert.ok((await page.locator("#allowlist-list").innerText()).includes("No allowlisted sites"), "allowlist must be cleared");
     assert.ok(/No sites recorded|unavailable/i.test(await page.locator("#history-list").innerText()), "history view must be empty");
 

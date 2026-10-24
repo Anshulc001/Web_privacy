@@ -20,6 +20,15 @@ function listItem(value) {
   return text("li", value);
 }
 
+/** One KPI tile: a small label, a large number, and an optional footnote. */
+function kpiCard(label, value, hint) {
+  const item = document.createElement("li");
+  item.className = "kpi";
+  item.append(text("span", label, "kpi-label"), text("strong", value, "kpi-value"));
+  if (hint) item.append(text("span", hint, "kpi-hint"));
+  return item;
+}
+
 function svgNode(name, attributes) {
   const node = document.createElementNS(SVG_NS, name);
   for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
@@ -27,19 +36,20 @@ function svgNode(name, attributes) {
 }
 
 /** Draws a column chart with plain SVG nodes; every label is set as text. */
-function renderBarChart(container, items) {
+function renderBarChart(container, items, label = "Chart") {
   clear(container);
   if (!items.length) {
     container.append(text("p", "No data yet.", "empty"));
     return;
   }
+  const total = items.reduce((sum, item) => sum + (Number.isFinite(item.value) ? item.value : 0), 0);
   const model = barChartModel(items, { width: CHART_WIDTH, height: CHART_HEIGHT });
   const svg = svgNode("svg", {
     viewBox: `0 0 ${model.width} ${model.height}`,
     width: "100%",
     height: model.height,
     role: "img",
-    "aria-label": `Chart with ${items.length} bars`
+    "aria-label": `${label}: ${items.length} buckets, ${total} in total`
   });
 
   for (const tick of model.ticks) {
@@ -50,13 +60,19 @@ function renderBarChart(container, items) {
   }
 
   for (const bar of model.bars) {
-    svg.append(svgNode("rect", {
+    const rect = svgNode("rect", {
       x: bar.x,
       y: bar.y,
       width: bar.width,
       height: Math.max(bar.height, bar.value > 0 ? 1 : 0),
+      rx: 4,
       class: "bar"
-    }));
+    });
+    // Hovering a bar explains itself; the numbers are also rendered as text.
+    const tooltip = svgNode("title", {});
+    tooltip.textContent = `${bar.label}: ${bar.value}`;
+    rect.append(tooltip);
+    svg.append(rect);
     const valueLabel = svgNode("text", { x: bar.labelX, y: bar.y - 4, class: "value", "text-anchor": "middle" });
     valueLabel.textContent = bar.value > 0 ? String(bar.value) : "";
     svg.append(valueLabel);
@@ -107,14 +123,26 @@ async function loadOverview() {
 
   const stats = el("overview-stats");
   clear(stats);
-  stats.append(listItem(`Sites recorded: ${overview.history.totalEvents}`));
-  stats.append(listItem(`Blocked today: ${overview.blocking.today}`));
-  stats.append(listItem(`Blocking: ${overview.blocking.enabled ? "on" : "off"}`));
-  stats.append(listItem(`History retention: ${overview.history.retentionHours} hours (${overview.history.paused ? "paused" : "recording"})`));
+  stats.append(kpiCard("Blocked today", String(overview.blocking.today), "requests stopped"));
+  stats.append(kpiCard("Sites recorded", String(overview.history.totalEvents), `last ${overview.history.retentionHours} h`));
+  stats.append(kpiCard("Blocking", overview.blocking.enabled ? "On" : "Off", `${overview.blocking.allowlist.length} allowlisted`));
+  stats.append(kpiCard("History", overview.history.paused ? "Paused" : "Recording", `${overview.history.retentionHours} h retention`));
 
-  renderBarChart(el("chart-sites"), overview.history.days.map((day) => ({ label: day.date.slice(5), value: day.count })));
-  renderBarChart(el("chart-blocked"), overview.blocking.series.map((day) => ({ label: day.date.slice(5), value: day.count })));
-  renderBarChart(el("chart-trackers"), overview.blocking.topHosts.slice(0, 7).map((entry) => ({ label: entry.host, value: entry.count })));
+  renderBarChart(
+    el("chart-sites"),
+    overview.history.days.map((day) => ({ label: day.date.slice(5), value: day.count })),
+    "Sites per day"
+  );
+  renderBarChart(
+    el("chart-blocked"),
+    overview.blocking.series.map((day) => ({ label: day.date.slice(5), value: day.count })),
+    "Blocked requests per day"
+  );
+  renderBarChart(
+    el("chart-trackers"),
+    overview.blocking.topHosts.slice(0, 7).map((entry) => ({ label: entry.host, value: entry.count })),
+    "Top blocked hosts"
+  );
 
   const dataList = el("data-status");
   clear(dataList);
@@ -289,11 +317,39 @@ async function refresh() {
     fillTargetSelect(targets);
     await loadOverview();
     el("status").textContent = "Loaded.";
+    el("status").className = "is-ready";
   } catch (error) {
     el("status").textContent = "Dashboard data is unavailable.";
+    el("status").className = "is-error";
     console.error("WebGuard dashboard failed to load.", error);
   }
 }
+
+// Highlight the section the reader is looking at, so the nav doubles as a
+// position indicator on a long page.
+const navLinks = [...document.querySelectorAll("nav a")];
+const navSections = navLinks
+  .map((link) => document.querySelector(link.getAttribute("href")))
+  .filter(Boolean);
+
+// The last section whose top has passed under the sticky header is the one being
+// read. Measuring on scroll is deterministic at load, unlike an observer that
+// needs a threshold to be crossed.
+function syncNav() {
+  const offset = 160;
+  let active = navSections[0];
+  for (const section of navSections) {
+    if (section.getBoundingClientRect().top <= offset) active = section;
+  }
+  for (const link of navLinks) {
+    if (active && link.getAttribute("href") === `#${active.id}`) link.setAttribute("aria-current", "true");
+    else link.removeAttribute("aria-current");
+  }
+}
+
+window.addEventListener("scroll", syncNav, { passive: true });
+window.addEventListener("resize", syncNav);
+syncNav();
 
 el("target-select").addEventListener("change", async (event) => {
   state.target = event.target.value || null;

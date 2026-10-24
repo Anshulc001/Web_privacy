@@ -8,41 +8,58 @@
   </head>
   <body>
     <header>
-      <h1>WebGuard</h1>
-      <p id="privacy-note">All data stays on this device. The only network calls are daily blocklist downloads and RDAP lookups you start yourself.</p>
-      <nav aria-label="Sections">
-        <a href="#overview">Overview</a>
-        <a href="#cookies">Cookies</a>
-        <a href="#permissions">Permissions</a>
-        <a href="#domain">Domain Info</a>
-        <a href="#ads">Ads &amp; Trackers</a>
-        <a href="#suspicious">Suspicious</a>
-        <a href="#breach">Breach &amp; OSINT</a>
-        <a href="#history">History</a>
-        <a href="#settings">Settings</a>
-      </nav>
+      <div class="topbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-3z"/>
+              <path d="M9 12l2 2 4-4"/>
+            </svg>
+          </span>
+          <div class="brand-text">
+            <h1>WebGuard</h1>
+            <p id="privacy-note">All data stays on this device. The only network calls are daily blocklist downloads and RDAP lookups you start yourself.</p>
+          </div>
+          <p id="status" role="status">Loading…</p>
+        </div>
+        <nav aria-label="Sections">
+          <a href="#overview">Overview</a>
+          <a href="#cookies">Cookies</a>
+          <a href="#permissions">Permissions</a>
+          <a href="#domain">Domain Info</a>
+          <a href="#ads">Ads &amp; Trackers</a>
+          <a href="#suspicious">Suspicious</a>
+          <a href="#breach">Breach &amp; OSINT</a>
+          <a href="#history">History</a>
+          <a href="#settings">Settings</a>
+        </nav>
+      </div>
     </header>
 
     <main>
-      <p id="status" role="status">Loading…</p>
-
       <section id="site-picker" aria-labelledby="site-picker-heading">
         <h2 id="site-picker-heading">Site</h2>
-        <label for="target-select">Show details for</label>
-        <select id="target-select"></select>
+        <div>
+          <label for="target-select">Show details for</label>
+          <select id="target-select"></select>
+        </div>
         <button id="refresh-site" type="button">Refresh</button>
         <p id="target-summary"></p>
       </section>
 
       <section id="overview" aria-labelledby="overview-heading">
         <h2 id="overview-heading">Overview</h2>
-        <ul id="overview-stats"></ul>
+        <ul id="overview-stats" class="kpis"></ul>
+
         <h3>Sites per day</h3>
         <div id="chart-sites" class="chart"></div>
+
         <h3>Blocked requests per day</h3>
         <div id="chart-blocked" class="chart"></div>
+
         <h3>Top blocked hosts</h3>
         <div id="chart-trackers" class="chart"></div>
+
         <h3>Data freshness</h3>
         <ul id="data-status"></ul>
       </section>
@@ -65,15 +82,15 @@
       <section id="domain" aria-labelledby="domain-heading">
         <h2 id="domain-heading">Domain Info</h2>
         <p id="domain-summary"></p>
-        <button id="rdap-lookup" type="button">Look up RDAP</button>
-        <p class="hint" id="tls-note"></p>
+        <button id="rdap-lookup" type="button" class="btn-primary">Look up RDAP</button>
         <dl id="domain-details"></dl>
+        <p class="hint" id="tls-note"></p>
       </section>
 
       <section id="ads" aria-labelledby="ads-heading">
         <h2 id="ads-heading">Ads &amp; Trackers</h2>
         <p id="ads-status"></p>
-        <label><input id="blocking-toggle" type="checkbox"> Blocking enabled</label>
+        <label class="switch"><input id="blocking-toggle" type="checkbox"> Blocking enabled</label>
         <p id="allowlist-status"></p>
         <button id="allowlist-toggle" type="button">Allowlist this site</button>
         <ul id="top-hosts"></ul>
@@ -108,17 +125,21 @@
         <h2 id="settings-heading">Settings</h2>
         <label for="retention-select">History retention</label>
         <select id="retention-select"></select>
-        <label><input id="history-paused" type="checkbox"> Pause history recording</label>
-        <p id="settings-retention-note"></p>
+        <label class="switch"><input id="history-paused" type="checkbox"> Pause history recording</label>
+        <p class="hint" id="settings-retention-note"></p>
+
         <h3>Allowlisted sites</h3>
         <ul id="allowlist-list"></ul>
+
         <h3>Data</h3>
         <ul id="settings-data"></ul>
+
         <button id="clear-history" type="button">Clear history now</button>
-        <button id="clear-all" type="button">Clear all WebGuard data</button>
-        <p id="settings-feedback"></p>
+        <button id="clear-all" type="button" class="btn-danger">Clear all WebGuard data</button>
+        <p id="settings-feedback" role="status"></p>
+
         <h3>Privacy</h3>
-        <p>WebGuard keeps everything local. It makes only two kinds of network request: the daily
+        <p class="hint">WebGuard keeps everything local. It makes only two kinds of network request: the daily
           blocklist downloads from the project's public repository, and RDAP lookups that you start
           by pressing the button. There is no analytics, no telemetry and no account.</p>
       </section>

@@ -8,6 +8,9 @@ const blockingData = document.getElementById("blocking-data");
 const blockingTopHosts = document.getElementById("blocking-top-hosts");
 const blockingToggle = document.getElementById("blocking-toggle");
 const allowlistToggle = document.getElementById("allowlist-toggle");
+const tabCount = document.getElementById("tab-count");
+const heroFigure = document.querySelector(".hero-figure");
+const heroCard = document.getElementById("hero");
 
 // The popup for the tab it is showing. Clicking a control reloads the details, so
 // keep the last report and let the controls act from it.
@@ -24,8 +27,11 @@ function addListItem(list, value) {
 
 function render(details, summary) {
   status.textContent = `Current site: ${details.hostname}`;
+  heroFigure.hidden = false;
+  heroCard.hidden = false;
 
   const blocking = details.blocking ?? { tab: 0, today: 0 };
+  tabCount.textContent = String(blocking.tab ?? 0);
   blockingStatus.textContent = `Blocking ${details.blockingEnabled ? "on" : "off"}; this tab: ${blocking.tab}; today: ${blocking.today}.`;
   blockingToggle.hidden = false;
   blockingToggle.textContent = details.blockingEnabled ? "Turn blocking off" : "Turn blocking on";
@@ -76,6 +82,11 @@ async function loadCurrentSite() {
   } catch (error) {
     if (token !== loadToken) return;
     current = null;
+    tabCount.textContent = "–";
+    // With no data there is nothing to count and nothing to toggle, so the whole
+    // card goes away instead of showing an empty box with a lone dash.
+    heroFigure.hidden = true;
+    heroCard.hidden = true;
     status.textContent = "Current-site privacy details are unavailable.";
     // Say so inside each section too, otherwise two headings sit over empty space
     // and it looks like a rendering bug rather than a browser-restricted page.

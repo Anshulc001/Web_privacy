@@ -7,25 +7,45 @@
     <link rel="stylesheet" href="popup.css">
   </head>
   <body>
-    <main>
-      <h1>WebGuard</h1>
-      <p id="status">Loading current-site privacy details…</p>
-      <p id="blocking-status"></p>
-      <p id="blocking-data"></p>
-      <p id="blocking-top-hosts"></p>
-      <button id="blocking-toggle" type="button" hidden></button>
-      <button id="allowlist-toggle" type="button" hidden></button>
-      <section aria-labelledby="cookies-heading">
+    <main class="shell">
+      <header class="head">
+        <span class="mark" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-3z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </span>
+        <h1>WebGuard</h1>
+        <p id="status" class="sub">Loading current-site privacy details…</p>
+      </header>
+
+      <section class="card hero" id="hero" aria-labelledby="blocking-heading">
+        <h2 id="blocking-heading" class="sr-only">Blocking for this tab</h2>
+        <p class="hero-figure"><span id="tab-count">–</span><span class="hero-unit">blocked here</span></p>
+        <p id="blocking-status" class="meta"></p>
+        <p id="blocking-data" class="meta"></p>
+        <p id="blocking-top-hosts" class="meta"></p>
+        <div class="actions">
+          <button id="blocking-toggle" type="button" hidden></button>
+          <button id="allowlist-toggle" type="button" hidden></button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="cookies-heading">
         <h2 id="cookies-heading">Cookies</h2>
         <ul id="cookies"></ul>
       </section>
-      <section aria-labelledby="permissions-heading">
+
+      <section class="card" aria-labelledby="permissions-heading">
         <h2 id="permissions-heading">Permissions</h2>
         <ul id="permissions"></ul>
-        <p id="permission-alerts"></p>
+        <p id="permission-alerts" class="meta"></p>
         <button id="expected-site" type="button" hidden></button>
       </section>
-      <button id="open-dashboard" type="button">Open Dashboard</button>
+
+      <footer class="foot">
+        <button id="open-dashboard" type="button" class="btn-primary">Open Dashboard</button>
+      </footer>
     </main>
     <script type="module" src="popup.js"></script>
   </body>
