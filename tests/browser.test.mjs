@@ -53,14 +53,18 @@ describe('WebGuard browser + extension checks', () => {
   it('popup HTML contains every expected element by id and has no inline scripts', () => {
     const html = read('popup/popup.html');
     const requiredIds = [
-      'status', 'blocking-status', 'blocking-data', 'blocking-top-hosts',
-      'blocking-toggle', 'allowlist-toggle',
-      'cookies-heading', 'cookies',
-      'permissions-heading', 'permissions', 'permission-alerts', 'expected-site',
+      'status', 'blocking-toggle', 'tab-count', 'see-blocked', 'blocked-panel', 'blocked-list',
+      'allowlist-toggle', 'cookies-heading', 'cookie-total', 'cookie-unit', 'cookie-empty',
+      'see-cookies', 'cookies-panel', 'cookie-summary', 'cookies',
+      'permissions-heading', 'permissions', 'breach-heading', 'breach-list',
       'open-dashboard',
     ];
     for (const id of requiredIds) {
       assert.ok(new RegExp(`id=["']${id}["']`).test(html), `popup.html must contain element #${id}`);
+    }
+    // The redesign dropped the noisy lines and the expected-site button.
+    for (const id of ['blocking-status', 'blocking-data', 'blocking-top-hosts', 'permission-alerts', 'expected-site']) {
+      assert.ok(!new RegExp(`id=["']${id}["']`).test(html), `popup.html must not contain element #${id}`);
     }
     const moduleScriptTag = /<script[^>]*type=["']module["'][^>]*>[\s\S]*?<\/script>/i;
     assert.ok(moduleScriptTag.test(html), 'popup.html must load popup.js as a module');
@@ -78,10 +82,10 @@ describe('WebGuard browser + extension checks', () => {
     assert.ok(/[{:;]/.test(css), 'popup.css should contain CSS declarations');
   });
 
-  it('popup render sets text via textContent, never innerHTML, for blocking summary lines', () => {
+  it('popup render sets text via textContent, never innerHTML, for site details', () => {
     const js = read('popup/popup.js');
-    // The popup builds blocking-status, blocking-data and blocking-top-hosts text using
-    // template literals assigned to element.textContent. Confirm no innerHTML writes exist.
+    // Blocked hosts, cookies and permissions all come from page data, so they must
+    // be written as text rather than parsed markup.
     assert.ok(/textContent\s*=/.test(js), 'popup should render via textContent');
     assert.ok(!/\.innerHTML\s*=/.test(js), 'popup should never write innerHTML from page data');
   });

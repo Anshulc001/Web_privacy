@@ -91,7 +91,7 @@ describe("live dashboard in Chrome", () => {
       assert.strictEqual(await page.locator("h1").innerText(), "WebGuard");
       // Text placeholders are empty until data arrives, so presence is the right check;
       // interactive controls must actually be visible.
-      for (const id of ["status", "blocking-status", "blocking-data", "blocking-top-hosts"]) {
+      for (const id of ["status", "tab-count", "see-blocked", "cookie-total", "see-cookies", "cookies", "permissions"]) {
         assert.strictEqual(await page.locator(`#${id}`).count(), 1, `popup element #${id} should exist`);
       }
       for (const id of ["open-dashboard"]) {

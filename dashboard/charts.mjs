@@ -55,6 +55,35 @@ export function barChartModel(items, { width = CHART_WIDTH, height = CHART_HEIGH
   };
 }
 
+/**
+ * Geometry for a ranked horizontal bar list. Hostnames are long, so each label
+ * gets its own column instead of sitting under a bar where labels collide.
+ */
+export function horizontalBarModel(items, { width = CHART_WIDTH, labelWidth = 200, rowHeight = 26, padTop = 8, padBottom = 8, padRight = 44 } = {}) {
+  const list = Array.isArray(items) ? items : [];
+  const height = padTop + padBottom + Math.max(1, list.length) * rowHeight;
+  const max = niceMax(list.map((item) => (Number.isFinite(item?.value) ? item.value : 0)));
+  const plotWidth = Math.max(1, width - labelWidth - padRight);
+
+  const bars = list.map((item, index) => {
+    const value = Number.isFinite(item?.value) ? item.value : 0;
+    const center = padTop + index * rowHeight + rowHeight / 2;
+    const barHeight = Math.max(6, Math.round(rowHeight * 0.44));
+    return {
+      label: String(item?.label ?? ""),
+      value,
+      x: labelWidth,
+      y: Math.round(center - barHeight / 2),
+      width: value > 0 ? Math.max(2, Math.round((value / max) * plotWidth)) : 0,
+      height: barHeight,
+      textY: Math.round(center + 4),
+      valueX: labelWidth + plotWidth + 8
+    };
+  });
+
+  return { width, height, max, labelWidth, plotWidth, bars };
+}
+
 /** A polyline path for a simple sparkline. */
 export function sparklinePath(values, { width = 240, height = 60 } = {}) {
   const list = (Array.isArray(values) ? values : []).filter((value) => Number.isFinite(value));

@@ -59,7 +59,7 @@
         <h2 id="overview-heading">Overview</h2>
         <ul id="overview-stats" class="kpis"></ul>
 
-        <h3>Sites per day</h3>
+        <h3 id="chart-sites-heading">Sites per day</h3>
         <div id="chart-sites" class="chart"></div>
 
         <h3>Blocked requests per day</h3>
@@ -81,7 +81,7 @@
 
       <section id="permissions" aria-labelledby="permissions-heading">
         <h2 id="permissions-heading">Permissions</h2>
-        <p class="hint">Heuristic, not a verdict. A grant only means the site holds that permission.</p>
+        <p class="hint">Not a verdict. "Allowed" means the site can use that permission right now; "not given" means it never asked or you dismissed it.</p>
         <ul id="permissions-list"></ul>
         <p id="permissions-alerts"></p>
         <button id="expected-toggle" type="button">Mark site as expected</button>
@@ -91,6 +91,7 @@
         <h2 id="domain-heading">Domain Info</h2>
         <p id="domain-summary"></p>
         <button id="rdap-lookup" type="button" class="btn-primary">Look up RDAP</button>
+        <p class="hint" id="rdap-note">RDAP is the public domain registry lookup that replaced WHOIS. It returns who registered a domain and the registration date, straight from the registry.</p>
         <dl id="domain-details"></dl>
         <p class="hint" id="tls-note"></p>
       </section>
@@ -98,30 +99,18 @@
       <section id="ads" aria-labelledby="ads-heading">
         <h2 id="ads-heading">Ads &amp; Trackers</h2>
         <p id="ads-status"></p>
-        <div class="card-cols">
-          <div class="col">
-            <div class="block-summary">
-              <span id="block-count">–</span>
-              <span class="block-unit">blocked for this site in this time frame</span>
-            </div>
-            <label class="switch"><input id="blocking-toggle" type="checkbox"> Blocking enabled</label>
-            <p id="allowlist-status"></p>
-            <button id="allowlist-toggle" type="button">Allowlist this site</button>
-            <button id="expand-blocked" type="button" class="btn-ghost">Show blocked items</button>
-          </div>
-          <div class="col">
-            <div class="blocked-panel" id="blocked-panel" hidden>
-              <div class="panel-head">
-                <span>Blocked items</span>
-                <button id="collapse-blocked" type="button" class="btn-ghost" aria-label="Close blocked items">‹</button>
-              </div>
-              <p class="panel-sub">Items WebGuard blocked while this site was open. Host-level and tracker observations, not a full request log.</p>
-              <ul id="blocked-list"></ul>
-              <p class="hint" id="blocked-source"></p>
-            </div>
-          </div>
+        <div class="block-summary">
+          <span id="block-count">–</span>
+          <span class="block-unit" id="block-unit">blocked requests in this browser</span>
         </div>
-        <ul id="top-hosts"></ul>
+        <label class="switch"><input id="blocking-toggle" type="checkbox"> Blocking enabled</label>
+        <p id="allowlist-status"></p>
+        <button id="allowlist-toggle" type="button">Allowlist this site</button>
+        <button id="expand-blocked" type="button" class="btn-ghost" aria-expanded="false" aria-controls="blocked-panel">Show blocked items</button>
+        <div class="blocked-panel" id="blocked-panel" hidden>
+          <ul id="blocked-list"></ul>
+          <p class="hint" id="blocked-source"></p>
+        </div>
       </section>
 
       <section id="suspicious" aria-labelledby="suspicious-heading">
@@ -158,9 +147,6 @@
 
         <h3>Allowlisted sites</h3>
         <ul id="allowlist-list"></ul>
-
-        <h3>Data</h3>
-        <ul id="settings-data"></ul>
 
         <button id="clear-history" type="button">Clear history now</button>
         <button id="clear-all" type="button" class="btn-danger">Clear all WebGuard data</button>

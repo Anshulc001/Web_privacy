@@ -17,40 +17,41 @@
         </span>
         <h1>WebGuard</h1>
         <p id="status" class="sub">Loading current-site privacy details…</p>
+        <button id="blocking-toggle" type="button" class="toggle" aria-pressed="true" hidden>WebGuard on</button>
       </header>
 
       <section class="card hero" id="hero" aria-labelledby="blocking-heading">
-        <h2 id="blocking-heading" class="sr-only">Blocking for this tab</h2>
-        <div class="hero-figure">
+        <h2 id="blocking-heading" class="sr-only">Ads and trackers blocked on this site</h2>
+        <p class="hero-figure">
+          <span class="sr-only">Ads and trackers blocked on this site:</span>
           <span id="tab-count">–</span>
-          <span class="hero-unit">blocked here</span>
+        </p>
+        <button id="see-blocked" type="button" class="link-btn" aria-expanded="false" aria-controls="blocked-panel">See blocked ads</button>
+        <div id="blocked-panel" class="blocked-panel" hidden>
+          <ul id="blocked-list"></ul>
+          <p id="blocked-source" class="hint"></p>
         </div>
-        <p id="blocking-status" class="meta"></p>
-        <p id="blocking-data" class="meta"></p>
-        <p id="blocking-top-hosts" class="meta"></p>
-        <div class="actions">
-          <button id="blocking-toggle" type="button" hidden></button>
-          <button id="allowlist-toggle" type="button" hidden></button>
-        </div>
-      </section>
-
-      <section class="card" aria-labelledby="blocked-heading" hidden>
-        <h2 id="blocked-heading">Ads &amp; trackers blocked here</h2>
-        <p id="blocked-summary" class="meta"></p>
-        <ul id="blocked-list"></ul>
-        <p id="blocked-source" class="hint"></p>
+        <button id="allowlist-toggle" type="button" hidden>Allowlist this site</button>
       </section>
 
       <section class="card" aria-labelledby="cookies-heading">
         <h2 id="cookies-heading">Cookies</h2>
-        <ul id="cookies"></ul>
+        <p class="cookie-figure">
+          <span class="sr-only">Cookies stored by this site:</span>
+          <span id="cookie-total">–</span>
+          <span id="cookie-unit" class="cookie-unit">cookies</span>
+        </p>
+        <p id="cookie-empty" class="meta" hidden></p>
+        <button id="see-cookies" type="button" class="link-btn" aria-expanded="false" aria-controls="cookies-panel" hidden>See cookies</button>
+        <div id="cookies-panel" hidden>
+          <p id="cookie-summary" class="meta"></p>
+          <ul id="cookies"></ul>
+        </div>
       </section>
 
-      <section class="card" aria-labelledby="permissions-heading" hidden>
+      <section class="card" aria-labelledby="permissions-heading">
         <h2 id="permissions-heading">Permissions</h2>
         <ul id="permissions"></ul>
-        <p id="permission-alerts" class="meta"></p>
-        <button id="expected-site" type="button" hidden></button>
       </section>
 
       <section class="card" aria-labelledby="breach-heading" hidden>

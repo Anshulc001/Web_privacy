@@ -1,10 +1,26 @@
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { resolve, join, relative, sep } from "node:path";
 import { deflateRawSync } from "node:zlib";
 import { readFileSync } from "node:fs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const OUTPUT_DIR = resolve(ROOT, "dist");
+
+// A build replaces the previous pack instead of piling up versions: anything
+// this script (or an earlier manual pack) produced is removed before writing.
+const PREVIOUS_PACKAGE = /^(webguard-.*\.(zip|crx|pem)|WebGuard-latest.*)$/i;
+
+async function clearPreviousPackages() {
+  let entries = [];
+  try {
+    entries = await readdir(OUTPUT_DIR);
+  } catch {
+    return;
+  }
+  const stale = entries.filter((entry) => PREVIOUS_PACKAGE.test(entry));
+  for (const entry of stale) await rm(join(OUTPUT_DIR, entry), { recursive: true, force: true });
+  if (stale.length > 0) console.log(`Removed ${stale.length} previous package(s): ${stale.join(", ")}`);
+}
 
 // Everything the browser needs at runtime. Tests, tools, docs and the signing
 // key stay out of the package.
@@ -116,6 +132,7 @@ end.writeUInt32LE(offset, 16);
 end.writeUInt16LE(0, 20);
 
 await mkdir(OUTPUT_DIR, { recursive: true });
+await clearPreviousPackages();
 const outputPath = resolve(OUTPUT_DIR, `webguard-${version}.zip`);
 await writeFile(outputPath, Buffer.concat([...chunks, centralBuffer, end]));
 

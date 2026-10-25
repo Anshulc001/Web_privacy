@@ -278,8 +278,6 @@ section > h2 + h3, h2 + h3 { margin-top: var(--s4); }
 /* ---------- lists used as data rows ---------- */
 
 #data-status li,
-#settings-data li,
-#top-hosts li,
 #allowlist-list li,
 #cookies-list li,
 #permissions-list li,
@@ -293,8 +291,6 @@ section > h2 + h3, h2 + h3 { margin-top: var(--s4); }
 }
 
 #data-status li:last-child,
-#settings-data li:last-child,
-#top-hosts li:last-child,
 #allowlist-list li:last-child,
 #cookies-list li:last-child,
 #permissions-list li:last-child,
@@ -306,7 +302,7 @@ section > h2 + h3, h2 + h3 { margin-top: var(--s4); }
   padding-bottom: 0;
 }
 
-#self-check-links, #breach-list, #top-hosts, #allowlist-list, #settings-data,
+#self-check-links, #breach-list, #allowlist-list,
 #cookies-list, #permissions-list, #risk-reasons, #data-status, #history-list {
   margin: var(--s2) 0 var(--s3);
 }
@@ -352,6 +348,15 @@ button:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+button:disabled,
+button:disabled:hover {
+  cursor: not-allowed;
+  opacity: 0.5;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--muted);
 }
 
 button.btn-primary {
@@ -441,19 +446,6 @@ button.btn-danger:hover { border-color: var(--danger); background: color-mix(in 
 
 /* Ads & trackers quick panel */
 
-.card-cols {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--s3);
-  margin: var(--s3) 0 var(--s4);
-}
-
-@media (min-width: 760px) {
-  .card-cols { grid-template-columns: 1fr 1fr; }
-}
-
-.col { min-width: 0; }
-
 .block-summary {
   display: flex;
   align-items: baseline;
@@ -497,26 +489,7 @@ button.btn-danger:hover { border-color: var(--danger); background: color-mix(in 
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: var(--s3);
-}
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  font-weight: 650;
-  font-size: 0.88rem;
-  color: var(--text);
-}
-
-.panel-head .btn-ghost {
-  margin: 0;
-  flex: none;
-}
-
-.panel-sub {
-  margin: var(--s1) 0 var(--s2);
-  color: var(--muted);
-  font-size: 0.78rem;
+  margin-top: var(--s3);
 }
 
 #blocked-list {
@@ -532,6 +505,28 @@ button.btn-danger:hover { border-color: var(--danger); background: color-mix(in 
 }
 
 #blocked-list li:last-child { border-bottom: none; padding-bottom: 0; }
+
+#blocked-list li.blocked-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.blocked-host { overflow-wrap: anywhere; }
+
+.blocked-count {
+  flex: none;
+  min-width: 26px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  text-align: center;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
 
 #blocked-source { margin-top: var(--s2); }
 

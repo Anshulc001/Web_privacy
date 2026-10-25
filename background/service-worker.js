@@ -37,7 +37,8 @@ const dashboardService = createDashboardService({
   observationStore,
   cookiesApi: chrome.cookies,
   tabsApi: chrome.tabs,
-  blockingManager
+  blockingManager,
+  blockingCounter
 });
 
 async function cachedDomainInfo(hostname) {

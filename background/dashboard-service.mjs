@@ -21,7 +21,7 @@ import { DEFAULT_SETTINGS } from "../lib/storage-settings.mjs";
 const DOMAIN_CACHE_KEY = "domainInfoCache";
 const MAX_RECENT_HOSTS = 25;
 
-export function createDashboardService({ storageArea, settingsStore, historyStore, observationStore, cookiesApi, tabsApi, blockingManager = null }) {
+export function createDashboardService({ storageArea, settingsStore, historyStore, observationStore, cookiesApi, tabsApi, blockingManager = null, blockingCounter = null }) {
   async function safeGet(key) {
     try {
       const stored = await storageArea.get(key);
@@ -143,10 +143,14 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       const domainInfo = await cachedDomainInfo(host);
       const risk = scoreRisk({ urlFindings: inspected.ok ? inspected.findings : [], threat, domainInfo });
       const breach = checkHostForBreaches(host, await safeGet(BREACH_DATA_KEY));
+      const blocking = blockingCounter
+        ? await blockingCounter.siteSummary(host)
+        : { days: {}, hosts: [], total: 0 };
 
       return {
         status: "ok",
         hostname: host,
+        blocking,
         cookies,
         permissions: audit.states,
         permissionAlerts: audit.alerts,

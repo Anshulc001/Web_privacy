@@ -3,7 +3,7 @@ const { chromium } = playwright;
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -107,6 +107,9 @@ describe("WebGuard end to end", () => {
       await context.waitForEvent("serviceworker", { timeout: 25_000 });
     }
 
+    // One real cookie lets the popup test the collapsed count and its detail list.
+    await context.addCookies([{ name: "webguard_test_cookie", value: "test-value", domain: "127.0.0.1", path: "/" }]);
+
     // Seed real activity: a page full of trackers, plus a second site for history.
     sitePage = await context.newPage();
     await sitePage.goto(baseUrl, { waitUntil: "load", timeout: 30_000 });
@@ -189,8 +192,43 @@ describe("WebGuard end to end", () => {
     assert.ok(dataText.includes("Breach data"), "breach status missing");
     assert.ok(dataText.includes("Phishing blocklist"), "threat status missing");
 
+    // The picker starts on "All sites": site-only panels explain that a site is
+    // needed instead of showing one site's data as if it were everyone's.
+    assert.strictEqual(await page.locator("#target-select").inputValue(), "", "the picker must default to all sites");
+    assert.match(await page.locator("#target-select option").first().innerText(), /All sites/);
+    assert.match(await page.locator("#cookies-status").innerText(), /Select a site/);
+    assert.strictEqual(await page.locator("#expected-toggle").isDisabled(), true, "site actions are disabled for all sites");
+    assert.match(await page.locator("#block-unit").innerText(), /this browser/);
+
     // Pick a deterministic site and check every site-scoped section.
-    const target = await pickTarget(page);
+    const target = await pickTarget(page, ["127.0.0.1", "example.com"]);
+    assert.match(await page.locator("#block-unit").innerText(), /on this site/, "the Ads count must follow the picker");
+    assert.strictEqual(await page.locator("#expected-toggle").isDisabled(), false, "site actions work for a picked site");
+
+    // Top blocked hosts use horizontal bars, so long hostnames cannot collide.
+    assert.strictEqual(await page.locator("#chart-trackers svg").count(), 1, "a ranked host chart is rendered");
+    assert.ok((await page.locator("#chart-trackers svg rect.bar").count()) >= 1, "ranked bars are drawn");
+    assert.strictEqual(
+      await page.locator("#chart-trackers svg text.label").count(),
+      await page.locator("#chart-trackers svg rect.bar").count(),
+      "every ranked bar must have its own label"
+    );
+
+    // Ads: one list of hosts, no separate collapse arrow, no repeated summary rows.
+    await page.click("#expand-blocked");
+    await page.waitForFunction(
+      () => document.getElementById("expand-blocked")?.getAttribute("aria-expanded") === "true",
+      null,
+      { timeout: 10_000 }
+    );
+    assert.strictEqual(await page.locator("#blocked-panel").isVisible(), true, "Show blocked items must open the host list");
+    assert.strictEqual(await page.locator("#collapse-blocked").count(), 0, "the extra collapse arrow must be gone");
+    assert.strictEqual(await page.locator("#top-hosts").count(), 0, "the duplicate top-hosts list must be gone");
+    const blockedText = await page.locator("#blocked-list").innerText();
+    assert.ok(blockedText.length > 0, "the blocked list must have content");
+    assert.ok(!/Blocked today|Blocked in this tab|Blocking is/.test(blockedText), `the blocked list repeats summary rows: ${blockedText}`);
+    await page.click("#expand-blocked");
+    assert.strictEqual(await page.locator("#blocked-panel").isVisible(), false, "the same button hides the list");
 
     const permissions = await page.locator("#permissions-list li").count();
     assert.strictEqual(permissions, 4, "four permission rows expected");
@@ -280,7 +318,7 @@ describe("WebGuard end to end", () => {
     // Retention change.
     await page.selectOption("#retention-select", "72");
     await page.waitForFunction(
-      () => document.getElementById("settings-retention-note")?.textContent?.includes("72 hours"),
+      () => document.getElementById("settings-retention-note")?.textContent?.includes("3 days"),
       null,
       { timeout: 15_000 }
     );
@@ -366,8 +404,11 @@ describe("WebGuard end to end", () => {
     await page.waitForSelector("main", { timeout: 10_000 });
 
     assert.strictEqual(await page.locator("h1").innerText(), "WebGuard");
-    for (const id of ["status", "blocking-status", "blocking-data", "blocking-top-hosts", "open-dashboard"]) {
+    for (const id of ["status", "tab-count", "see-blocked", "allowlist-toggle", "cookies", "permissions", "open-dashboard"]) {
       assert.strictEqual(await page.locator(`#${id}`).count(), 1, `popup #${id} must exist`);
+    }
+    for (const id of ["blocking-status", "blocking-data", "blocking-top-hosts", "expected-site"]) {
+      assert.strictEqual(await page.locator(`#${id}`).count(), 0, `popup #${id} must be gone`);
     }
     assert.ok(await page.locator("#open-dashboard").isVisible());
 
@@ -669,32 +710,50 @@ describe("WebGuard end to end", () => {
       { timeout: 20_000 }
     );
 
-    assert.match(await page.locator("#blocking-status").innerText(), /Blocking (on|off); this tab: \d+; today: \d+/, "popup must show live counts");
-    assert.match(await page.locator("#blocking-data").innerText(), /Blocklist data: (today|\d+ days? old|outdated|unavailable)/, "popup must state data freshness");
-    const cookieRows = await page.locator("#cookies li").count();
-    const cookieText = await page.locator("#cookies").innerText();
-    assert.ok(
-      cookieRows >= 1 || /no cookies|unavailable/i.test(cookieText),
-      `popup must list cookies or clearly say there are none, got "${cookieText}"`
-    );
-    const permissionsSection = await page.locator("#permissions-heading").locator("..");
-    const permissionsVisible = await permissionsSection.isVisible();
-    if (permissionsVisible) {
-      const permissionRows = await page.locator("#permissions li").count();
-      const permissionText = await page.locator("#permissions").innerText();
-      assert.ok(
-        permissionRows >= 1 || /no permission|unavailable/i.test(permissionText),
-        `when permissions are shown they must be real, got "${permissionText}"`
-      );
-    } else {
-      assert.ok(
-        /unavailable/i.test(await page.locator("#status").innerText()) ||
-        (await page.locator("#permissions-heading").getAttribute("hidden") !== null),
-        "permissions section must stay hidden when there is no permission data"
-      );
-    }
+    assert.match(await page.locator("#blocking-toggle").innerText(), /^WebGuard (on|off)$/, "the header toggle states only the blocking mode");
+    assert.match(await page.locator("#tab-count").innerText(), /^\d+$/, "the popup shows only the blocked count");
+    assert.strictEqual(await page.locator("#status").innerText(), "Current site: 127.0.0.1");
 
-    for (const id of ["blocking-toggle", "allowlist-toggle", "expected-site"]) {
+    // "See blocked ads" opens a host list with per-host counts.
+    assert.strictEqual(await page.locator("#blocked-panel").isVisible(), false, "the blocked list starts collapsed");
+    assert.strictEqual(await page.locator("#see-blocked").innerText(), "See blocked ads");
+    await page.click("#see-blocked");
+    await page.waitForFunction(() => document.getElementById("see-blocked")?.textContent === "Hide blocked ads", null, { timeout: 10_000 });
+    assert.strictEqual(await page.locator("#blocked-panel").isVisible(), true, "clicking must reveal the blocked list");
+    const blockedRows = await page.locator("#blocked-list li.blocked-row").count();
+    const blockedText = await page.locator("#blocked-list").innerText();
+    assert.ok(blockedRows >= 1, `the seeded trackers must appear in the blocked list, got "${blockedText}"`);
+    for (const row of await page.locator("#blocked-list li.blocked-row").all()) {
+      assert.match(await row.locator(".blocked-count").innerText(), /^\d+$/, "every blocked row needs a count");
+    }
+    const openShotDir = join(__dirname, "..", "test-results", "screenshots");
+    await mkdir(openShotDir, { recursive: true });
+    await page.screenshot({ path: join(openShotDir, "popup-live-blocked.png"), fullPage: true });
+    await page.click("#see-blocked");
+    assert.strictEqual(await page.locator("#blocked-panel").isVisible(), false, "the list collapses again");
+    // Cookies stay collapsed behind their count and open on request.
+    assert.strictEqual(await page.locator("#cookies-panel").isVisible(), false, "cookies start collapsed");
+    assert.strictEqual(await page.locator("#cookie-total").innerText(), "1", "the count must reflect the stored cookie");
+    assert.strictEqual(await page.locator("#cookie-unit").innerText(), "cookie");
+    await page.click("#see-cookies");
+    assert.strictEqual(await page.locator("#cookies-panel").isVisible(), true, "See cookies must open the details");
+    assert.strictEqual(await page.locator("#cookies li").count(), 1, "the stored cookie must be listed once");
+    assert.ok((await page.locator("#cookie-summary").innerText()).includes("1 cookie"), "the summary must explain the cookie");
+    const cookieShotDir = join(__dirname, "..", "test-results", "screenshots");
+    await mkdir(cookieShotDir, { recursive: true });
+    await page.screenshot({ path: join(cookieShotDir, "popup-cookies.png"), fullPage: true });
+    await page.click("#see-cookies");
+    assert.strictEqual(await page.locator("#cookies-panel").isVisible(), false, "Hide cookies must collapse it again");
+    // Permissions list only what the site actually holds, never prompts.
+    assert.strictEqual(await page.locator("#permissions-heading").locator("..").isVisible(), true, "the permissions section is always visible");
+    const permissionText = await page.locator("#permissions").innerText();
+    assert.ok(
+      /no permission granted|this site can use it right now|unavailable/i.test(permissionText),
+      `the permissions section must list granted access or say none, got "${permissionText}"`
+    );
+    assert.ok(!/prompt|denied/i.test(permissionText), `permission prompts must not be listed, got "${permissionText}"`);
+
+    for (const id of ["blocking-toggle", "allowlist-toggle"]) {
       assert.strictEqual(await page.locator(`#${id}`).isVisible(), true, `popup #${id} must become visible`);
     }
 
@@ -715,13 +774,13 @@ describe("WebGuard end to end", () => {
 
     await page.click("#blocking-toggle");
     await page.waitForFunction(
-      () => document.getElementById("blocking-status")?.textContent?.includes("off"),
+      () => document.getElementById("blocking-toggle")?.textContent === "WebGuard off",
       null,
       { timeout: 15_000 }
     );
     await page.click("#blocking-toggle");
     await page.waitForFunction(
-      () => document.getElementById("blocking-status")?.textContent?.includes("on"),
+      () => document.getElementById("blocking-toggle")?.textContent === "WebGuard on",
       null,
       { timeout: 15_000 }
     );
@@ -737,21 +796,95 @@ describe("WebGuard end to end", () => {
     const cookieRowCount = await page.locator("#cookies li").count();
     assert.ok(cookieRowCount <= 1 || new Set(await page.locator("#cookies li").allInnerTexts()).size === cookieRowCount, "cookie rows must not be duplicated");
 
-    // The freshness line must be real: it used to say "unavailable" even after a
-    // successful download because the summary never carried the sync time.
-    const lastSync = await page.evaluate(async (tabId) =>
-      (await chrome.runtime.sendMessage({ type: "webguard.blockingSummary", tabId })).blockingDataLastSync, siteTabId);
-    const freshness = await page.locator("#blocking-data").innerText();
-    if (lastSync) {
-      assert.match(freshness, /Blocklist data: (today|\d+ days? old)/, `a completed sync must date the blocklist, got "${freshness}"`);
-    }
-
     // Capture the populated popup for visual review while the data is on screen.
     const directory = join(__dirname, "..", "test-results", "screenshots");
     await mkdir(directory, { recursive: true });
     await page.screenshot({ path: join(directory, "popup-live.png"), fullPage: true });
 
     await page.close();
+  });
+
+  it("opens the real toolbar popup over a site tab", async () => {
+    // This is the installed-extension path a user takes: activate a real site tab,
+    // open the action popup, and read the popup window itself. Playwright does not
+    // list Chrome's popup bubble as a page, so drive the target over CDP.
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const worker = context.serviceWorkers()[0];
+    const siteTabId = await worker.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const site = tabs.find((tab) => (tab.url ?? "").startsWith("http://127.0.0.1"));
+      if (!site) return null;
+      await chrome.tabs.update(site.id, { active: true });
+      return site.id;
+    });
+    assert.ok(siteTabId, "the seeded site tab must still be open");
+
+    const browserSession = await context.browser().newBrowserCDPSession();
+    await worker.evaluate(() => chrome.action.openPopup());
+
+    let popupTarget = null;
+    for (let attempt = 0; attempt < 50 && !popupTarget; attempt += 1) {
+      const { targetInfos } = await browserSession.send("Target.getTargets");
+      popupTarget = targetInfos.find((info) => info.type === "page" && info.url === POPUP_URL) ?? null;
+      if (!popupTarget) await wait(200);
+    }
+    assert.ok(popupTarget, "the toolbar button must open the popup window");
+
+    const { sessionId } = await browserSession.send("Target.attachToTarget", { targetId: popupTarget.targetId, flatten: false });
+    let nextId = 1;
+    const pending = new Map();
+    browserSession.on("Target.receivedMessageFromTarget", (event) => {
+      const data = JSON.parse(event.message);
+      const waiter = pending.get(data.id);
+      if (!waiter) return;
+      pending.delete(data.id);
+      if (data.error) waiter.reject(new Error(JSON.stringify(data.error)));
+      else waiter.resolve(data.result);
+    });
+    const send = (method, params = {}) => {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        browserSession.send("Target.sendMessageToTarget", { sessionId, message: JSON.stringify({ id, method, params }) }).catch(reject);
+      });
+    };
+    const evaluate = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
+
+    await send("Page.enable");
+    await send("Runtime.enable");
+
+    let popupStatus = "";
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      popupStatus = await evaluate("document.getElementById('status')?.textContent ?? ''");
+      if (/Current site: 127\.0\.0\.1/.test(popupStatus)) break;
+      await wait(200);
+    }
+    assert.match(popupStatus, /Current site: 127\.0\.0\.1/, `the toolbar popup must describe the active tab, got "${popupStatus}"`);
+    assert.match(await evaluate("document.getElementById('blocking-toggle').innerText"), /^WebGuard (on|off)$/, "the toolbar popup shows the on/off switch");
+    assert.match(await evaluate("document.getElementById('tab-count').innerText"), /^\d+$/, "the toolbar popup shows the blocked count");
+    assert.match(
+      await evaluate("document.getElementById('permissions').innerText"),
+      /no permission granted|this site can use it right now/i,
+      "the real popup lists granted permissions or says there are none"
+    );
+
+    // Chrome sizes the popup window, so it must fit without sideways scrolling.
+    const overflow = await evaluate("JSON.stringify({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth })");
+    const { scrollWidth, clientWidth } = JSON.parse(overflow);
+    assert.ok(scrollWidth <= clientWidth + 1, `the real popup overflows (${scrollWidth} > ${clientWidth})`);
+
+    // The expandable blocked list must work in the real popup too.
+    await evaluate("document.getElementById('see-blocked').click()");
+    assert.strictEqual(await evaluate("document.getElementById('blocked-panel').hidden"), false, "the blocked list must open");
+    assert.ok((await evaluate("document.getElementById('blocked-list').innerText")).length > 0, "the blocked list must say what happened");
+
+    const directory = join(__dirname, "..", "test-results", "screenshots");
+    await mkdir(directory, { recursive: true });
+    const shot = await send("Page.captureScreenshot", { format: "png" });
+    await writeFile(join(directory, "popup-toolbar.png"), Buffer.from(shot.data, "base64"));
+
+    await browserSession.send("Target.closeTarget", { targetId: popupTarget.targetId });
+    await browserSession.detach();
   });
 
   it("captures screenshots of the dashboard and popup for visual review", async () => {
@@ -761,6 +894,8 @@ describe("WebGuard end to end", () => {
     const dashboard = await context.newPage();
     await dashboard.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await dashboard.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+    await dashboard.setViewportSize({ width: 1280, height: 900 });
+    await dashboard.screenshot({ path: join(directory, "dashboard-all-sites.png"), fullPage: true });
     // Earlier tests clear history, so the seeded site may no longer be listed;
     // screenshot whatever target the dashboard actually offers.
     const target = await dashboard.evaluate(() => {
@@ -784,7 +919,7 @@ describe("WebGuard end to end", () => {
     await dashboard.close();
 
     const written = (await readdir(directory)).filter((name) => name.endsWith(".png"));
-    for (const name of ["dashboard-light.png", "dashboard-dark.png", "dashboard-narrow.png"]) {
+    for (const name of ["dashboard-all-sites.png", "dashboard-light.png", "dashboard-dark.png", "dashboard-narrow.png"]) {
       assert.ok(written.includes(name), `${name} must be written, found ${written.join(", ")}`);
     }
 
@@ -796,7 +931,7 @@ describe("WebGuard end to end", () => {
     await popup.waitForTimeout(800);
     await popup.screenshot({ path: join(directory, "popup.png") });
     // A page the popup cannot read must still explain itself, not show empty sections.
-    assert.match(await popup.locator("#cookies").innerText(), /unavailable/, "the popup must explain missing details");
+    assert.match(await popup.locator("#cookie-empty").innerText(), /unavailable/, "the popup must explain missing details");
     assert.match(await popup.locator("#permissions").innerText(), /unavailable/, "the popup must explain missing permissions");
     await popup.close();
     assert.ok((await readdir(directory)).includes("popup.png"), "popup.png must be written");

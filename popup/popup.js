@@ -1,23 +1,32 @@
 const status = document.getElementById("status");
+const cookieTotal = document.getElementById("cookie-total");
+const cookieUnit = document.getElementById("cookie-unit");
+const cookieEmpty = document.getElementById("cookie-empty");
+const cookieSummary = document.getElementById("cookie-summary");
+const cookiesPanel = document.getElementById("cookies-panel");
+const seeCookies = document.getElementById("see-cookies");
 const cookiesList = document.getElementById("cookies");
 const permissionsSection = document.getElementById("permissions-heading").parentElement;
 const permissionsList = document.getElementById("permissions");
-const alerts = document.getElementById("permission-alerts");
-const expectedButton = document.getElementById("expected-site");
-const blockingStatus = document.getElementById("blocking-status");
-const blockingData = document.getElementById("blocking-data");
-const blockingTopHosts = document.getElementById("blocking-top-hosts");
 const blockingToggle = document.getElementById("blocking-toggle");
 const allowlistToggle = document.getElementById("allowlist-toggle");
 const tabCount = document.getElementById("tab-count");
 const heroFigure = document.querySelector(".hero-figure");
-const heroCard = document.getElementById("hero");const breachSection = document.getElementById("breach-heading").parentElement;
+const heroCard = document.getElementById("hero");
+const breachSection = document.getElementById("breach-heading").parentElement;
 const breachSummary = document.getElementById("breach-summary");
 const breachList = document.getElementById("breach-list");
-const blockedSection = document.getElementById("blocked-heading").parentElement;
-const blockedSummary = document.getElementById("blocked-summary");
+const seeBlocked = document.getElementById("see-blocked");
+const blockedPanel = document.getElementById("blocked-panel");
 const blockedList = document.getElementById("blocked-list");
 const blockedSource = document.getElementById("blocked-source");
+
+const PERMISSION_LABELS = {
+  camera: "Camera",
+  microphone: "Microphone",
+  geolocation: "Location",
+  notifications: "Notifications"
+};
 
 // The popup for the tab it is showing. Clicking a control reloads the details, so
 // keep the last report and let the controls act from it.
@@ -25,6 +34,8 @@ let current = null;
 // Only the newest load may paint, otherwise two loads started close together both
 // append rows and the lists end up duplicated.
 let loadToken = 0;
+// The cookie list is collapsed behind its count, like the blocked-ad list.
+let cookiesOpen = false;
 
 function addListItem(list, value) {
   const item = document.createElement("li");
@@ -32,55 +43,26 @@ function addListItem(list, value) {
   list.append(item);
 }
 
-function render(details, summary, breach, blockedForSite) {
+function render(details, summary, breach) {
   status.textContent = `Current site: ${details.hostname}`;
   heroFigure.hidden = details.blocking === undefined;
   heroCard.hidden = details.blocking === undefined;
 
   const blocking = details.blocking ?? { tab: 0, today: 0 };
   tabCount.textContent = String(blocking.tab ?? 0);
-  blockingStatus.textContent = `Blocking ${details.blockingEnabled ? "on" : "off"}; this tab: ${blocking.tab}; today: ${blocking.today}.`;
+
   blockingToggle.hidden = false;
-  blockingToggle.textContent = details.blockingEnabled ? "Turn blocking off" : "Turn blocking on";
+  blockingToggle.textContent = details.blockingEnabled ? "WebGuard on" : "WebGuard off";
+  blockingToggle.setAttribute("aria-pressed", String(Boolean(details.blockingEnabled)));
+  blockingToggle.classList.toggle("on", Boolean(details.blockingEnabled));
+  blockingToggle.classList.toggle("off", !details.blockingEnabled);
+
   allowlistToggle.hidden = false;
-  allowlistToggle.textContent = details.allowlisted ? "Remove this site from allowlist" : "Allowlist this site";
+  allowlistToggle.textContent = details.allowlisted ? "Remove from allowlist" : "Allowlist this site";
 
-  const lastSync = summary.blockingDataLastSync;
-  if (lastSync && typeof lastSync === "string") {
-    const ageDays = Math.floor((Date.now() - new Date(lastSync).getTime()) / 86400000);
-    blockingData.textContent = `Blocklist data: ${ageDays === 0 ? "today" : ageDays + " day" + (ageDays === 1 ? "" : "s") + " old."}`;
-  } else if (summary.status === "outdated") {
-    blockingData.textContent = "Blocklist data: outdated. Still blocking with last known list.";
-  } else {
-    blockingData.textContent = "Blocklist data: unavailable.";
-  }
-
-  const topHosts = Array.isArray(summary.topHosts) ? summary.topHosts : [];
-  blockingTopHosts.textContent = topHosts.length
-    ? `Top blocked: ${topHosts.slice(0, 3).map((h) => h[0]).join(", ")}${topHosts.length > 3 ? ", +" + (topHosts.length - 3) + " more" : ""}.`
-    : "Top blocked: none yet.";
-
-  if (details.cookies.length === 0) {
-    cookiesList.textContent = "No cookies detected for this site.";
-  } else {
-    cookiesList.textContent = "";
-    for (const cookie of details.cookies) {
-      addListItem(cookiesList, `${cookie.name} — ${cookie.domain}; ${cookie.party}; ${cookie.expiry}; Secure: ${cookie.secure}; HttpOnly: ${cookie.httpOnly}; SameSite: ${cookie.sameSite}`);
-    }
-  }
-
-  if (details.permissionStatesAvailable && details.permissions && Object.keys(details.permissions).length > 0) {
-    permissionsSection.hidden = false;
-    permissionsList.textContent = "";
-    for (const [name, state] of Object.entries(details.permissions)) addListItem(permissionsList, `${name}: ${state}`);
-    alerts.textContent = details.permissionAlerts.length
-      ? details.permissionAlerts.map((alert) => alert.message).join(" ")
-      : "No unusual permission pattern detected. This is not a safety verdict.";
-    expectedButton.hidden = false;
-    expectedButton.textContent = details.expected ? "Mark site as not expected" : "Mark site as expected";
-  } else {
-    permissionsSection.hidden = true;
-  }
+  renderBlocked(summary);
+  renderCookies(details.cookies);
+  renderPermissions(details);
 
   if (details.breach && details.breach.status === "match") {
     breachSection.hidden = false;
@@ -97,8 +79,117 @@ function render(details, summary, breach, blockedForSite) {
   } else if (details.breach && details.breach.status === "unavailable") {
     breachSection.hidden = false;
     breachSummary.textContent = `Breach data is unavailable${details.breach.reason ? `: ${details.breach.reason}` : "."}`;
-    breachList.textContent = "";  } else {
+    breachList.textContent = "";
+  } else {
     breachSection.hidden = true;
+  }
+}
+
+function renderBlocked(summary) {
+  const hosts = Array.isArray(summary?.topHosts) ? summary.topHosts : [];
+  blockedList.textContent = "";
+  if (hosts.length === 0) {
+    addListItem(blockedList, "No ads or trackers have been blocked yet.");
+    blockedSource.textContent = "When WebGuard blocks an ad or tracker request, the host will show up here.";
+    return;
+  }
+
+  for (const entry of hosts) {
+    const host = Array.isArray(entry) ? entry[0] : entry?.host;
+    const count = Array.isArray(entry) ? entry[1] : entry?.count;
+    if (typeof host !== "string" || !host) continue;
+    const item = document.createElement("li");
+    item.className = "blocked-row";
+
+    const name = document.createElement("span");
+    name.className = "blocked-host";
+    name.textContent = host;
+    const badge = document.createElement("span");
+    badge.className = "blocked-count";
+    badge.textContent = String(Number.isFinite(count) ? count : 0);
+    badge.title = `${badge.textContent} blocked request(s)`;
+
+    item.append(name, badge);
+    blockedList.append(item);
+  }
+
+  blockedSource.textContent = "Host-level block counts recorded in this browser, most frequent first. Not a full request log, and page URLs are never stored.";
+}
+
+function setCookiesOpen(open) {
+  cookiesOpen = open;
+  cookiesPanel.hidden = !open;
+  seeCookies.textContent = open ? "Hide cookies" : "See cookies";
+  seeCookies.setAttribute("aria-expanded", String(open));
+}
+
+function renderCookies(cookies) {
+  const list = Array.isArray(cookies) ? cookies : [];
+  cookiesList.textContent = "";
+  cookieSummary.textContent = "";
+  cookieEmpty.hidden = true;
+  cookieEmpty.textContent = "";
+
+  if (list.length === 0) {
+    cookieTotal.hidden = true;
+    cookieUnit.hidden = true;
+    seeCookies.hidden = true;
+    setCookiesOpen(false);
+    cookieEmpty.hidden = false;
+    cookieEmpty.textContent = "No cookies stored by this site in your browser.";
+    return;
+  }
+
+  cookieTotal.hidden = false;
+  cookieUnit.hidden = false;
+  cookieTotal.textContent = String(list.length);
+  cookieUnit.textContent = list.length === 1 ? "cookie" : "cookies";
+  seeCookies.hidden = false;
+
+  const firstParty = list.filter((cookie) => cookie.party === "first-party").length;
+  const thirdParty = list.length - firstParty;
+  const persistent = list.filter((cookie) => cookie.expiry !== "Session").length;
+  cookieSummary.textContent = `This site is saving ${list.length} cookie${list.length === 1 ? "" : "s"} on your device: ${firstParty} set by the site itself${thirdParty ? `, ${thirdParty} set by other companies` : ""}. ${persistent ? `${persistent} ${persistent === 1 ? "stays" : "stay"} after you close the browser.` : "They are removed when you close the browser."}`;
+
+  for (const cookie of list) {
+    addListItem(cookiesList, describeCookie(cookie));
+  }
+
+  setCookiesOpen(cookiesOpen);
+}
+
+function describeCookie(cookie) {
+  const owner = cookie.party === "first-party"
+    ? "set by this site"
+    : "set by another company";
+  const lifetime = cookie.expiry === "Session"
+    ? "removed when you close the browser"
+    : `kept until ${String(cookie.expiry).slice(0, 10)}`;
+  const flags = [
+    cookie.secure ? "only sent over secure connections" : "can be sent over plain connections",
+    cookie.httpOnly ? "hidden from page scripts" : "readable by page scripts"
+  ];
+  return `${cookie.name} (${cookie.domain}) — ${owner}; ${lifetime}; ${flags.join("; ")}.`;
+}
+
+function renderPermissions(details) {
+  permissionsSection.hidden = false;
+  permissionsList.textContent = "";
+
+  if (!details.permissionStatesAvailable) {
+    addListItem(permissionsList, "Permission details are unavailable on this page.");
+    return;
+  }
+
+  const granted = Object.entries(details.permissions ?? {}).filter(([, state]) => state === "granted");
+  if (granted.length === 0) {
+    addListItem(permissionsList, "No permission granted.");
+    return;
+  }
+
+  for (const [name] of granted) {
+    const label = PERMISSION_LABELS[name] ?? name.charAt(0).toUpperCase() + name.slice(1);
+    addListItem(permissionsList, `${label} — this site can use it right now.`);
   }
 }
 
@@ -109,11 +200,9 @@ async function loadCurrentSite() {
     const details = await chrome.runtime.sendMessage({ type: "webguard.currentSitePrivacy", tabId: tab?.id });
     const breach = (await chrome.runtime.sendMessage({ type: "webguard.breachInfo", tabId: tab?.id })) ?? null;
     const summary = (await chrome.runtime.sendMessage({ type: "webguard.blockingSummary", tabId: tab?.id })) ?? {};
-    const blockedForSite = (await chrome.runtime.sendMessage({ type: "webguard.blockedForSite", hostname: details.hostname })) ?? null;
     if (token !== loadToken) return;
     current = details;
-    render(details, summary, breach, blockedForSite);
-    renderBlocked(blockedForSite);
+    render(details, summary, breach);
   } catch (error) {
     if (token !== loadToken) return;
     current = null;
@@ -121,36 +210,38 @@ async function loadCurrentSite() {
     heroFigure.hidden = true;
     heroCard.hidden = true;
     status.textContent = "Current-site privacy details are unavailable.";
+    blockingToggle.hidden = true;
+    allowlistToggle.hidden = true;
     cookiesList.textContent = "";
+    cookieSummary.textContent = "";
+    cookieTotal.hidden = true;
+    cookieUnit.hidden = true;
+    seeCookies.hidden = true;
+    setCookiesOpen(false);
+    cookieEmpty.hidden = false;
+    cookieEmpty.textContent = "Cookie details are unavailable on this page.";
     permissionsList.textContent = "";
-    blockedList.textContent = "";
-    blockedSection.hidden = true;
-    blockedSource.textContent = "";
-    addListItem(cookiesList, "Cookie details are unavailable on this page.");
+    permissionsSection.hidden = false;
+    breachList.textContent = "";
+    breachSection.hidden = true;
     addListItem(permissionsList, "Permission details are unavailable on this page.");
-    alerts.textContent = "";
     console.error("WebGuard popup could not load site details.", error);
   }
 }
 
-function renderBlocked(blockedForSite) {
-  if (blockedForSite && blockedForSite.status === "ok" && blockedForSite.items.length > 0) {
-    blockedSection.hidden = false;
-    blockedSummary.textContent = `WebGuard blocked ${blockedForSite.items.length} tracker/ad host observation(s) while this site was open. Host-level observations, not a full request log.`;
-    blockedList.textContent = "";
-    for (const item of blockedForSite.items) {
-      addListItem(blockedList, item.host ? `${item.host} — ${item.count ?? 0} block(s)` : String(item));
-    }
-    blockedSource.textContent = "Blocked items come from the host-level blocklist the extension ships and from third-party hosts it observed on this site. No page request paths are stored.";
-  } else if (blockedForSite && blockedForSite.status === "empty") {
-    blockedSection.hidden = false;
-    blockedSummary.textContent = "No tracker or ad hosts have been blocked while this site was open yet.";
-    blockedList.textContent = "";
-    blockedSource.textContent = "When this site loads ad or tracker hosts, they will show up here.";
-  } else {
-    blockedSection.hidden = true;
-  }
+function setBlockedOpen(open) {
+  blockedPanel.hidden = !open;
+  seeBlocked.textContent = open ? "Hide blocked ads" : "See blocked ads";
+  seeBlocked.setAttribute("aria-expanded", String(open));
 }
+
+seeBlocked.addEventListener("click", () => {
+  setBlockedOpen(blockedPanel.hidden);
+});
+
+seeCookies.addEventListener("click", () => {
+  setCookiesOpen(cookiesPanel.hidden);
+});
 
 blockingToggle.addEventListener("click", async () => {
   if (!current) return;
@@ -161,12 +252,6 @@ blockingToggle.addEventListener("click", async () => {
 allowlistToggle.addEventListener("click", async () => {
   if (!current) return;
   await chrome.runtime.sendMessage({ type: "webguard.toggleAllowlist", hostname: current.hostname, allowlisted: !current.allowlisted });
-  await loadCurrentSite();
-});
-
-expectedButton.addEventListener("click", async () => {
-  if (!current) return;
-  await chrome.runtime.sendMessage({ type: "webguard.setExpectedSite", hostname: current.hostname, expected: !current.expected });
   await loadCurrentSite();
 });
 

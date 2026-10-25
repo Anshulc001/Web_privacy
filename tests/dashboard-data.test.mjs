@@ -10,7 +10,7 @@ import {
   describeData,
   MAX_CHART_DAYS
 } from "../lib/dashboard-data.mjs";
-import { barChartModel, sparklinePath, niceMax } from "../dashboard/charts.mjs";
+import { barChartModel, horizontalBarModel, sparklinePath, niceMax } from "../dashboard/charts.mjs";
 
 const NOW = Date.parse("2026-10-25T12:00:00Z");
 const HOUR = 3_600_000;
@@ -117,6 +117,27 @@ describe("barChartModel", () => {
     assert.strictEqual(niceMax([3]), 5);
     assert.strictEqual(niceMax([37]), 50);
     assert.strictEqual(niceMax([]), 1);
+  });
+});
+
+describe("horizontalBarModel", () => {
+  it("keeps long host labels in their own column and scales the bars", () => {
+    const model = horizontalBarModel([
+      { label: "pubads.g.doubleclick.net", value: 29 },
+      { label: "pagead2.googlesyndication.com", value: 12 },
+      { label: "quiet.test", value: 0 }
+    ], { width: 640 });
+    assert.strictEqual(model.bars.length, 3);
+    for (const bar of model.bars) assert.strictEqual(bar.x, model.labelWidth, "labels never sit under a bar");
+    assert.ok(model.bars[0].width > model.bars[1].width, "a larger count must draw a longer bar");
+    assert.strictEqual(model.bars[2].width, 0, "a zero count draws no bar");
+    assert.ok(model.bars[0].width <= model.plotWidth, "bars stay inside the plot area");
+  });
+
+  it("handles an empty host list", () => {
+    const model = horizontalBarModel([], { width: 640 });
+    assert.deepStrictEqual(model.bars, []);
+    assert.strictEqual(model.max, 1);
   });
 });
 
