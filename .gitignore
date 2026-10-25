@@ -17,6 +17,10 @@ dist/
 # Playwright MCP artifacts
 .playwright-mcp/
 
+# Local working notes (not pushed)
+WORKLOG.md
+SITE-CANDIDATES.md
+
 # OS / editor artifacts
 .DS_Store
 Thumbs.db
