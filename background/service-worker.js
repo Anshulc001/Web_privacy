@@ -134,7 +134,10 @@ async function currentSitePrivacy(tabId) {
   const cookies = await inspectSiteCookies(chrome.cookies, hostname, observation?.thirdPartyHosts ?? []);
   const audit = auditPermissions(hostname, observation?.permissionStates, (await settingsStore.load()).expectedSites);
   const settings = await settingsStore.load();
-  return { hostname, cookies, permissions: audit.states, permissionAlerts: audit.alerts, expected: audit.expected, blocking: await blockingCounter.summary(tabId), blockingEnabled: settings.blockingEnabled, allowlisted: settings.siteAllowlist.includes(hostname) };
+  const reported = audit.states && typeof audit.states === "object"
+    ? Object.entries(audit.states).filter(([, state]) => state && state !== "unavailable")
+    : [];
+  return { hostname, cookies, permissions: audit.states, permissionAlerts: audit.alerts, expected: audit.expected, permissionStatesAvailable: reported.length > 0, blocking: await blockingCounter.summary(tabId), blockingEnabled: settings.blockingEnabled, allowlisted: settings.siteAllowlist.includes(hostname) };
 }
 
 chrome.webNavigation.onCommitted.addListener((details) => {

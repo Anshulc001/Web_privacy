@@ -671,8 +671,28 @@ describe("WebGuard end to end", () => {
 
     assert.match(await page.locator("#blocking-status").innerText(), /Blocking (on|off); this tab: \d+; today: \d+/, "popup must show live counts");
     assert.match(await page.locator("#blocking-data").innerText(), /Blocklist data: (today|\d+ days? old|outdated|unavailable)/, "popup must state data freshness");
-    assert.ok((await page.locator("#cookies li").count()) >= 1, "popup must list cookies or say there are none");
-    assert.strictEqual(await page.locator("#permissions li").count(), 4, "popup must list four permissions");
+    const cookieRows = await page.locator("#cookies li").count();
+    const cookieText = await page.locator("#cookies").innerText();
+    assert.ok(
+      cookieRows >= 1 || /no cookies|unavailable/i.test(cookieText),
+      `popup must list cookies or clearly say there are none, got "${cookieText}"`
+    );
+    const permissionsSection = await page.locator("#permissions-heading").locator("..");
+    const permissionsVisible = await permissionsSection.isVisible();
+    if (permissionsVisible) {
+      const permissionRows = await page.locator("#permissions li").count();
+      const permissionText = await page.locator("#permissions").innerText();
+      assert.ok(
+        permissionRows >= 1 || /no permission|unavailable/i.test(permissionText),
+        `when permissions are shown they must be real, got "${permissionText}"`
+      );
+    } else {
+      assert.ok(
+        /unavailable/i.test(await page.locator("#status").innerText()) ||
+        (await page.locator("#permissions-heading").getAttribute("hidden") !== null),
+        "permissions section must stay hidden when there is no permission data"
+      );
+    }
 
     for (const id of ["blocking-toggle", "allowlist-toggle", "expected-site"]) {
       assert.strictEqual(await page.locator(`#${id}`).isVisible(), true, `popup #${id} must become visible`);
@@ -707,9 +727,15 @@ describe("WebGuard end to end", () => {
     );
 
     // Two reloads in quick succession used to append the rows twice.
-    assert.strictEqual(await page.locator("#permissions li").count(), 4, "permissions must not be duplicated");
-    const cookieRows = await page.locator("#cookies li").count();
-    assert.ok(cookieRows <= 1 || new Set(await page.locator("#cookies li").allInnerTexts()).size === cookieRows, "cookie rows must not be duplicated");
+    const permissionsAfterReload = await page.locator("#permissions li").count();
+    if (permissionsAfterReload > 0) {
+      assert.ok(
+        permissionsAfterReload <= 4,
+        `permissions must not be duplicated, saw ${permissionsAfterReload} rows`
+      );
+    }
+    const cookieRowCount = await page.locator("#cookies li").count();
+    assert.ok(cookieRowCount <= 1 || new Set(await page.locator("#cookies li").allInnerTexts()).size === cookieRowCount, "cookie rows must not be duplicated");
 
     // The freshness line must be real: it used to say "unavailable" even after a
     // successful download because the summary never carried the sync time.

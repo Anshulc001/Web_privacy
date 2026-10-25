@@ -21,7 +21,10 @@
 
       <section class="card hero" id="hero" aria-labelledby="blocking-heading">
         <h2 id="blocking-heading" class="sr-only">Blocking for this tab</h2>
-        <p class="hero-figure"><span id="tab-count">–</span><span class="hero-unit">blocked here</span></p>
+        <div class="hero-figure">
+          <span id="tab-count">–</span>
+          <span class="hero-unit">blocked here</span>
+        </div>
         <p id="blocking-status" class="meta"></p>
         <p id="blocking-data" class="meta"></p>
         <p id="blocking-top-hosts" class="meta"></p>
@@ -31,20 +34,34 @@
         </div>
       </section>
 
+      <section class="card" aria-labelledby="blocked-heading" hidden>
+        <h2 id="blocked-heading">Ads &amp; trackers blocked here</h2>
+        <p id="blocked-summary" class="meta"></p>
+        <ul id="blocked-list"></ul>
+        <p id="blocked-source" class="hint"></p>
+      </section>
+
       <section class="card" aria-labelledby="cookies-heading">
         <h2 id="cookies-heading">Cookies</h2>
         <ul id="cookies"></ul>
       </section>
 
-      <section class="card" aria-labelledby="permissions-heading">
+      <section class="card" aria-labelledby="permissions-heading" hidden>
         <h2 id="permissions-heading">Permissions</h2>
         <ul id="permissions"></ul>
         <p id="permission-alerts" class="meta"></p>
         <button id="expected-site" type="button" hidden></button>
       </section>
 
+      <section class="card" aria-labelledby="breach-heading" hidden>
+        <h2 id="breach-heading">Data breaches</h2>
+        <p id="breach-summary" class="meta"></p>
+        <ul id="breach-list"></ul>
+      </section>
+
       <footer class="foot">
         <button id="open-dashboard" type="button" class="btn-primary">Open Dashboard</button>
+        <p id="privacy-note" class="hint">Privacy &amp; data: the only network calls are the daily blocklist download and RDAP lookups you start yourself. No analytics, no telemetry, no account.</p>
       </footer>
     </main>
     <script type="module" src="popup.js"></script>

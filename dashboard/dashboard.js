@@ -1,9 +1,29 @@
 import { barChartModel, CHART_HEIGHT, CHART_WIDTH } from "./charts.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const state = { target: null, overview: null };
+const state = { target: null, overview: null, frame: "today" };
 
 const el = (id) => document.getElementById(id);
+
+function frameWindow(frame, now = Date.now()) {
+  const msPerDay = 86400000;
+  if (frame === "today") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    return { start: start.getTime(), end: now };
+  }
+  if (frame === "yesterday") {
+    const end = new Date(now);
+    end.setHours(0, 0, 0, 0);
+    const start = new Date(end.getTime() - msPerDay);
+    start.setHours(0, 0, 0, 0);
+    return { start: start.getTime(), end: end.getTime() - 1 };
+  }
+  const start = new Date(now - 6 * msPerDay);
+  start.setHours(0, 0, 0, 0);
+  return { start: start.getTime(), end: now };
+}
+
 
 function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
@@ -121,6 +141,9 @@ async function loadOverview() {
   const overview = await send({ type: "webguard.dashboardOverview" });
   state.overview = overview;
 
+  el("frame-select").value = state.frame;
+  el("frame-select").disabled = false;
+
   const stats = el("overview-stats");
   clear(stats);
   stats.append(kpiCard("Blocked today", String(overview.blocking.today), "requests stopped"));
@@ -154,13 +177,19 @@ async function loadOverview() {
 
   const topHosts = el("top-hosts");
   clear(topHosts);
-  if (overview.blocking.topHosts.length === 0) topHosts.append(listItem("No blocked requests recorded yet."));
-  for (const entry of overview.blocking.topHosts) topHosts.append(listItem(`${entry.host} — ${entry.count}`));
+  if (overview.blocking.topHosts.length === 0) {
+    topHosts.textContent = "No blocked requests recorded yet.";
+  } else {
+    for (const entry of overview.blocking.topHosts) topHosts.append(listItem(`${entry.host} — ${entry.count}`));
+  }
 
   const allowlistList = el("allowlist-list");
   clear(allowlistList);
-  if (overview.blocking.allowlist.length === 0) allowlistList.append(listItem("No allowlisted sites."));
-  for (const host of overview.blocking.allowlist) allowlistList.append(listItem(host));
+  if (overview.blocking.allowlist.length === 0) {
+    allowlistList.textContent = "No allowlisted sites.";
+  } else {
+    for (const host of overview.blocking.allowlist) allowlistList.append(listItem(host));
+  }
 
   el("blocking-toggle").checked = overview.blocking.enabled;
   el("history-paused").checked = overview.history.paused;
@@ -187,7 +216,113 @@ async function loadOverview() {
   }
 
   if (state.target) await loadSite(state.target);
-  if (dateSelect.value) await loadHistoryDay(dateSelect.value);
+  if (dateSelect.value) {
+    await loadHistoryDay(dateSelect.value);
+  }
+
+  await loadBlockedForSite(state.target);
+}
+
+async function loadBlockedForSite(hostname) {
+  const panel = el("blocked-panel");
+  const countEl = el("block-count");
+  const list = el("blocked-list");
+  const sourceEl = el("blocked-source");
+
+  if (!hostname) {
+    panel.hidden = true;
+    countEl.textContent = "–";
+    list.textContent = "";
+    sourceEl.textContent = "";
+    return;
+  }
+
+  panel.hidden = false;
+  const summary = await send({ type: "webguard.blockingSummary", tabId: null });
+  const currentTab = (Number.isInteger(summary?.tab) && summary.tab > 0) ? summary.tab : null;
+  const today = Number.isFinite(summary?.today) ? summary.today : 0;
+
+  let frameCount = 0;
+  let frameItems = [];
+
+  if (state.frame === "today") {
+    frameCount = today;
+    frameItems = summarizeBlockedForSite({ hostname, today, currentTab, topHosts: summary?.topHosts, report: await currentSiteReport(hostname) });
+  } else if (state.frame === "yesterday") {
+    frameItems = summarizeBlockedForSite({ hostname, today: 0, currentTab: null, topHosts: summary?.topHosts, report: await currentSiteReport(hostname), yesterdayDate: frameWindow("yesterday").start });
+  } else {
+    frameItems = summarizeBlockedForSite({ hostname, today, currentTab, topHosts: summary?.topHosts, report: await currentSiteReport(hostname), weekWindow: frameWindow("week") });
+  }
+
+  countEl.textContent = String(frameCount > 0 ? frameCount : "0");
+  clear(list);
+  if (!frameItems.length) {
+    list.textContent = "No blocked items recorded for this site in this time frame.";
+  } else {
+    for (const item of frameItems) list.append(listItem(formatBlockedItem(item)));
+  }
+
+  sourceEl.textContent = `Blocking is ${state.overview?.blocking.enabled ? "on" : "off"} for this browser. Counts reflect requests WebGuard stopped and tracker/host observations, not a full request log.`;
+}
+
+async function currentSiteReport(hostname) {
+  try {
+    return await send({ type: "webguard.siteReport", hostname });
+  } catch {
+    return null;
+  }
+}
+
+function summarizeBlockedForSite(data) {
+  const items = [];
+  const hostname = data.hostname;
+  const report = data.report;
+
+  if ((data.yesterdayDate || data.weekWindow) && report) {
+    const breach = report.breach;
+    if (breach && breach.status === "match") {
+      for (const match of breach.matches.slice(0, 20)) {
+        items.push({ kind: "breach", text: `${match.title} — ${match.breachDate ?? "date unknown"}` });
+      }
+    }
+    const threat = report.threat;
+    if (threat && threat.status === "match") {
+      if (!items.some((item) => item.kind === "threat")) {
+        items.push({ kind: "threat", text: `Phishing/tracker list match for ${threat.matchedDomain ?? "this host"}.` });
+      }
+    }
+  }
+
+  if (data.topHosts && Array.isArray(data.topHosts)) {
+    for (const entry of data.topHosts.slice(0, 20)) {
+      items.push({ kind: "host", text: `${entry[0]} — blocked ${entry[1]} time(s)` });
+    }
+  }
+
+  if (data.currentTab != null && data.currentTab > 0) {
+    const label = `${hostname} — ${data.currentTab} blocked in this tab now`;
+    if (!items.some((item) => item.kind === "tab")) {
+      items.push({ kind: "tab", text: label });
+    }
+  }
+
+  if (data.today > 0) {
+    const label = `${hostname} — ${data.today} blocked today across this browser`;
+    if (!items.some((item) => item.kind === "today")) {
+      items.push({ kind: "today", text: label });
+    }
+  }
+
+  return items;
+}
+
+function formatBlockedItem(item) {
+  if (item.kind === "breach") return `Breach: ${item.text}`;
+  if (item.kind === "threat") return `Security list: ${item.text}`;
+  if (item.kind === "host") return `Blocked host: ${item.text}`;
+  if (item.kind === "tab") return `Blocked in this tab: ${item.text}`;
+  if (item.kind === "today") return `Blocked today: ${item.text}`;
+  return item.text;
 }
 
 async function loadSite(hostname) {
@@ -202,21 +337,35 @@ async function loadSite(hostname) {
   clear(cookiesList);
   const cookies = report.cookies;
   if (!cookies || cookies.status === "unavailable") {
-    el("cookies-status").textContent = "Cookie details are unavailable.";
+    el("cookies-status").textContent = "Cookie details are unavailable on this page.";
+    cookiesList.textContent = "";
   } else {
     const list = cookies.cookies ?? [];
-    el("cookies-status").textContent = list.length === 0 ? "0 cookies found for this site." : `${list.length} cookie(s).`;
-    for (const cookie of list) {
-      cookiesList.append(listItem(`${cookie.name} — ${cookie.domain}; ${cookie.party}; expires: ${cookie.expiry}; Secure: ${cookie.secure}; HttpOnly: ${cookie.httpOnly}; SameSite: ${cookie.sameSite}`));
+    el("cookies-status").textContent = list.length === 0 ? "No cookies detected for this site." : `${list.length} cookie(s).`;
+    if (list.length > 0) {
+      for (const cookie of list) {
+        cookiesList.append(listItem(`${cookie.name} — ${cookie.domain}; ${cookie.party}; expires: ${cookie.expiry}; Secure: ${cookie.secure}; HttpOnly: ${cookie.httpOnly}; SameSite: ${cookie.sameSite}`));
+      }
     }
   }
 
   const permissionsList = el("permissions-list");
   clear(permissionsList);
-  for (const [name, value] of Object.entries(report.permissions ?? {})) permissionsList.append(listItem(`${name}: ${value}`));
+  const permissionNames = Object.keys(report.permissions ?? {});
+  const reportablePermissions = permissionNames.filter((name) => {
+    const state = report.permissions[name];
+    return state && state !== "unavailable";
+  });
+  if (reportablePermissions.length === 0) {
+    permissionsList.textContent = "No usable permission data for this site.";
+  } else {
+    for (const name of reportablePermissions) {
+      permissionsList.append(listItem(`${name}: ${report.permissions[name]}`));
+    }
+  }
   el("permissions-alerts").textContent = report.permissionAlerts.length
     ? report.permissionAlerts.map((alert) => alert.message).join(" ")
-    : "No heuristic permission alert. This is not a safety verdict.";
+    : "No unusual permission pattern detected. This is not a safety verdict.";
   const expectedButton = el("expected-toggle");
   expectedButton.textContent = report.expected ? "Mark site as not expected" : "Mark site as expected";
   expectedButton.dataset.expected = String(report.expected);
@@ -258,8 +407,10 @@ async function loadSite(hostname) {
   const breach = report.breach;
   if (!breach || breach.status === "unavailable") {
     breachSummary.textContent = `Breach data is unavailable${breach?.reason ? `: ${breach.reason}` : "."}`;
+    breachList.textContent = "";
   } else if (breach.status === "not-found") {
     breachSummary.textContent = "This site was not found in the breach list. That is not proof it was never breached.";
+    breachList.textContent = "";
   } else {
     breachSummary.textContent = `This site appeared in ${breach.matches.length} known breach(es) (matched ${breach.matchedDomain}).`;
     for (const match of breach.matches) {
@@ -305,7 +456,7 @@ async function loadHistoryDay(date) {
   }
   el("history-retention").textContent = `Only the last ${state.overview?.history.retentionHours ?? 48} hours of hostnames are kept.`;
   if (result.hosts.length === 0) {
-    list.append(listItem("No sites recorded for this day."));
+    list.textContent = "No sites recorded for this day.";
     return;
   }
   for (const entry of result.hosts) list.append(listItem(`${entry.host} — ${entry.count} visit(s)`));
@@ -322,6 +473,8 @@ async function refresh() {
     el("status").textContent = "Dashboard data is unavailable.";
     el("status").className = "is-error";
     console.error("WebGuard dashboard failed to load.", error);
+  } finally {
+    // Keep the UI responsive even if a later step fails.
   }
 }
 
@@ -354,6 +507,7 @@ syncNav();
 el("target-select").addEventListener("change", async (event) => {
   state.target = event.target.value || null;
   if (state.target) await loadSite(state.target);
+  await loadBlockedForSite(state.target);
 });
 
 el("refresh-site").addEventListener("click", () => refresh());
@@ -389,6 +543,23 @@ el("allowlist-toggle").addEventListener("click", async () => {
   const allowlisted = !(state.overview?.blocking.allowlist ?? []).includes(state.target);
   await send({ type: "webguard.toggleAllowlist", hostname: state.target, allowlisted });
   await loadOverview();
+});
+
+el("expand-blocked").addEventListener("click", () => {
+  const panel = el("blocked-panel");
+  panel.hidden = false;
+  el("expand-blocked").hidden = true;
+});
+
+el("collapse-blocked").addEventListener("click", () => {
+  el("blocked-panel").hidden = true;
+  el("expand-blocked").hidden = false;
+});
+
+el("frame-select").addEventListener("change", async (event) => {
+  state.frame = event.target.value;
+  await loadOverview();
+  if (state.target) await loadBlockedForSite(state.target);
 });
 
 el("rdap-lookup").addEventListener("click", async () => {

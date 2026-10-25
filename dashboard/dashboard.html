@@ -22,6 +22,14 @@
           </div>
           <p id="status" role="status">Loading…</p>
         </div>
+        <div class="frame-pick">
+          <label for="frame-select" class="sr-only">Time frame</label>
+          <select id="frame-select" aria-label="Time frame">
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="week">Past 7 days</option>
+          </select>
+        </div>
         <nav aria-label="Sections">
           <a href="#overview">Overview</a>
           <a href="#cookies">Cookies</a>
@@ -90,9 +98,29 @@
       <section id="ads" aria-labelledby="ads-heading">
         <h2 id="ads-heading">Ads &amp; Trackers</h2>
         <p id="ads-status"></p>
-        <label class="switch"><input id="blocking-toggle" type="checkbox"> Blocking enabled</label>
-        <p id="allowlist-status"></p>
-        <button id="allowlist-toggle" type="button">Allowlist this site</button>
+        <div class="card-cols">
+          <div class="col">
+            <div class="block-summary">
+              <span id="block-count">–</span>
+              <span class="block-unit">blocked for this site in this time frame</span>
+            </div>
+            <label class="switch"><input id="blocking-toggle" type="checkbox"> Blocking enabled</label>
+            <p id="allowlist-status"></p>
+            <button id="allowlist-toggle" type="button">Allowlist this site</button>
+            <button id="expand-blocked" type="button" class="btn-ghost">Show blocked items</button>
+          </div>
+          <div class="col">
+            <div class="blocked-panel" id="blocked-panel" hidden>
+              <div class="panel-head">
+                <span>Blocked items</span>
+                <button id="collapse-blocked" type="button" class="btn-ghost" aria-label="Close blocked items">‹</button>
+              </div>
+              <p class="panel-sub">Items WebGuard blocked while this site was open. Host-level and tracker observations, not a full request log.</p>
+              <ul id="blocked-list"></ul>
+              <p class="hint" id="blocked-source"></p>
+            </div>
+          </div>
+        </div>
         <ul id="top-hosts"></ul>
       </section>
 

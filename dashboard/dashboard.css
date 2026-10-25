@@ -327,6 +327,9 @@ select {
   padding: 8px 10px;
   max-width: 100%;
   margin: var(--s1) 0 var(--s3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 select:hover { border-color: var(--accent); }
@@ -371,6 +374,27 @@ button.btn-danger:hover { border-color: var(--danger); background: color-mix(in 
   border-radius: 6px;
 }
 
+/* Time frame picker: top corner, three short options, defaults to Today. */
+.frame-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  margin-left: auto;
+}
+
+#frame-select {
+  font: inherit;
+  font-size: 0.84rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+#frame-select:hover { border-color: var(--accent); }
+
 /* Switches: the checkbox stays the real control, the label text is the name. */
 .switch {
   display: flex;
@@ -414,6 +438,108 @@ button.btn-danger:hover { border-color: var(--danger); background: color-mix(in 
 .switch input:checked::after { transform: translateX(16px); }
 .switch:hover input { background: color-mix(in srgb, var(--accent) 45%, var(--border-strong)); }
 .switch:hover input:checked { background: var(--accent); }
+
+/* Ads & trackers quick panel */
+
+.card-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s3);
+  margin: var(--s3) 0 var(--s4);
+}
+
+@media (min-width: 760px) {
+  .card-cols { grid-template-columns: 1fr 1fr; }
+}
+
+.col { min-width: 0; }
+
+.block-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: var(--s2);
+}
+
+#block-count {
+  font-size: 1.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.block-unit {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 6px 10px;
+  margin: var(--s2) 0 0;
+}
+
+.btn-ghost:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.blocked-panel {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--s3);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-weight: 650;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.panel-head .btn-ghost {
+  margin: 0;
+  flex: none;
+}
+
+.panel-sub {
+  margin: var(--s1) 0 var(--s2);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+#blocked-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#blocked-list li {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+
+#blocked-list li:last-child { border-bottom: none; padding-bottom: 0; }
+
+#blocked-source { margin-top: var(--s2); }
+
+/* ---------- Popup-style shared blocked-item styling ---------- */
+
+.blocked-item {
+  display: block;
+}
 
 /* ---------- domain info table ---------- */
 
