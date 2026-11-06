@@ -53,20 +53,27 @@ describe("live dashboard in Chrome", () => {
 
       assert.strictEqual(await page.title(), "WebGuard Dashboard");
 
-      for (const id of ["overview", "cookies", "permissions", "domain", "ads", "suspicious", "breach", "history", "settings"]) {
-        assert.ok(await page.locator(`#${id}`).isVisible(), `section #${id} should be visible`);
-      }
-
+      // Wait for the first render: the two-mode layout is applied then, so
+      // reading section visibility before it would see the raw HTML.
       await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 20_000 });
       assert.strictEqual(await page.locator("#status").innerText(), "Loaded.");
+
+      // The dashboard opens in "All sites" mode, where only the whole-browser
+      // sections are shown; per-site panels appear once a site is picked.
+      for (const id of ["overview", "inspect-site", "ads", "history", "settings"]) {
+        assert.ok(await page.locator(`#${id}`).isVisible(), `section #${id} should be visible`);
+      }
+      for (const id of ["cookies", "permissions", "domain", "suspicious", "breach"]) {
+        assert.strictEqual(await page.locator(`#${id}`).isVisible(), false, `section #${id} is site-only`);
+      }
 
       // Charts must be real SVG built without a chart library.
       const svgCount = await page.locator(".chart svg").count();
       assert.ok(svgCount >= 1, `expected at least one rendered SVG chart, found ${svgCount}`);
 
-      // Data freshness list must be populated.
-      const dataItems = await page.locator("#data-status li").count();
-      assert.ok(dataItems >= 1, "data freshness list should have entries");
+      // Data freshness is one compact line in Settings.
+      const syncStatus = await page.locator("#sync-status").innerText();
+      assert.ok(syncStatus.includes("Ad and tracker rules"), `sync status missing data: ${syncStatus}`);
 
       assert.deepStrictEqual(consoleErrors, [], "dashboard must not log console errors");
     } finally {

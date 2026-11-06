@@ -35,6 +35,19 @@ test("does not replace an existing cleanup alarm and ignores unrelated alarms", 
   assert.equal(prunes, 0);
 });
 
+test("prunes blocking-count day buckets alongside history", async () => {
+  const alarms = createAlarms();
+  let prunedHours = null;
+  const manager = createAlarmManager(
+    alarms,
+    { async prune() {} },
+    { async load() { return { historyRetentionHours: 72 }; } },
+    { async prune(hours) { prunedHours = hours; } }
+  );
+  await manager.pruneHistory();
+  assert.equal(prunedHours, 72, "blocking counts share the history retention window");
+});
+
 test("surfaces an alarm API failure", async () => {
   const manager = createAlarmManager({
     onAlarm: { addListener() {} },

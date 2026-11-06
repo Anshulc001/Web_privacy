@@ -33,9 +33,13 @@
 
 body {
   margin: 0;
-  min-width: 320px;
+  /* A fixed 320px minimum plus the 15px scrollbar made the page wider than the
+     popup window. The width is now capped by the available space instead. */
+  width: 320px;
+  max-width: 100%;
   max-height: 580px;
   overflow-y: auto;
+  overflow-x: hidden;
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
@@ -217,6 +221,21 @@ button.btn-primary:hover { filter: brightness(1.06); color: #ffffff; background:
   border-top: 1px solid var(--border);
 }
 
+/* Every blocked source is listed, so the panel scrolls instead of the popup
+   growing past the window. */
+#blocked-list {
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+}
+
+.hero-sub {
+  margin: 2px 0 0;
+}
+
+.hero-sub[hidden] { display: none; }
+
 .blocked-panel[hidden] { display: none; }
 
 li.blocked-row {
@@ -227,7 +246,12 @@ li.blocked-row {
   -webkit-line-clamp: unset;
 }
 
-.blocked-host { overflow-wrap: anywhere; }
+.blocked-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .blocked-count {
   flex: none;
@@ -242,6 +266,28 @@ li.blocked-row {
 }
 
 #blocked-source { margin-top: 6px; font-size: 0.74rem; }
+
+/* breach match: one compact, actionable line instead of a description list */
+
+.breach-card[hidden] { display: none; }
+
+.breach-chip {
+  width: 100%;
+  padding: 8px 10px;
+  border-color: #e3b341;
+  background: #fff8e5;
+  color: #7a5300;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.breach-chip:hover { border-color: #b8860b; background: #fdefc8; color: #7a5300; }
+
+@media (prefers-color-scheme: dark) {
+  .breach-chip { background: #2a2313; border-color: #7a5f1f; color: #f2c14e; }
+  .breach-chip:hover { background: #352c17; color: #f2c14e; }
+}
 
 .cookie-figure {
   display: flex;

@@ -177,8 +177,8 @@ describe("WebGuard end to end", () => {
     // Overview reflects the seeded browsing. The tiles are stacked boxes, so the
     // text may be split across lines; compare on normalized whitespace.
     const overview = (await page.locator("#overview-stats").innerText()).replace(/\s+/g, " ");
-    assert.ok(/Sites recorded \d+/.test(overview), `overview should show a sites-recorded count, got "${overview}"`);
-    assert.ok(/Blocked today \d+/.test(overview), `overview should show a blocked count, got "${overview}"`);
+    assert.ok(/Visits recorded [\d.]+k?/.test(overview), `overview should show a visits count, got "${overview}"`);
+    assert.ok(/Blocked today [\d.]+k?/.test(overview), `overview should show a blocked count, got "${overview}"`);
 
     // Charts are real SVG with bars.
     const charts = await page.locator(".chart svg").count();
@@ -186,23 +186,57 @@ describe("WebGuard end to end", () => {
     const bars = await page.locator("#chart-blocked svg rect.bar").count();
     assert.ok(bars >= 7, `blocked chart should have 7 daily bars, found ${bars}`);
 
-    // Data freshness lists all three files.
-    const dataText = await page.locator("#data-status").innerText();
+    // Data freshness is a single compact line in Settings.
+    const dataText = await page.locator("#sync-status").innerText();
     assert.ok(dataText.includes("Ad and tracker rules"), "rules status missing");
     assert.ok(dataText.includes("Breach data"), "breach status missing");
     assert.ok(dataText.includes("Phishing blocklist"), "threat status missing");
 
-    // The picker starts on "All sites": site-only panels explain that a site is
-    // needed instead of showing one site's data as if it were everyone's.
+    // The picker starts on "All sites": site-only panels are hidden instead of
+    // sitting on the page as dead boxes, and one inspect card offers quick picks.
     assert.strictEqual(await page.locator("#target-select").inputValue(), "", "the picker must default to all sites");
     assert.match(await page.locator("#target-select option").first().innerText(), /All sites/);
-    assert.match(await page.locator("#cookies-status").innerText(), /Select a site/);
+    assert.strictEqual(await page.locator("#inspect-site").isVisible(), true, "all sites mode offers the inspect card");
+    assert.strictEqual(await page.locator("#cookies").isVisible(), false, "cookies are site-only");
+    assert.strictEqual(await page.locator("#site-tabs").isVisible(), false, "the site jump bar is site-only");
     assert.strictEqual(await page.locator("#expected-toggle").isDisabled(), true, "site actions are disabled for all sites");
-    assert.match(await page.locator("#block-unit").innerText(), /this browser/);
+    assert.match(
+      await page.locator("#block-unit").innerText(),
+      /^blocked requests from \d+ sources? (in this browser|across \d+ websites?)$/,
+      "the browser-wide Ads count must state how many sources it covers"
+    );
+
+    // All-sites mode shows both breakdowns, and each one adds up to the KPI.
+    await page.click("#expand-blocked");
+    await page.waitForFunction(
+      () => document.getElementById("expand-blocked")?.getAttribute("aria-expanded") === "true",
+      null,
+      { timeout: 10_000 }
+    );
+    const browserTotal = Number(((await page.locator("#block-count").getAttribute("title")) ?? "0").split(" ")[0]);
+    const sumOfCounts = (selector) => page.locator(selector).evaluateAll((nodes) =>
+      nodes.reduce((sum, node) => sum + Number((node.title ?? "0").split(" ")[0]), 0));
+    // The group headings are styled uppercase, so compare on the underlying text.
+    assert.deepStrictEqual(
+      (await page.locator("#blocked-list li.blocked-group").allInnerTexts()).map((text) => text.toLowerCase()),
+      ["by website", "by tracker source"],
+      "all-sites mode must show both breakdowns"
+    );
+    assert.strictEqual(await sumOfCounts("#blocked-list li.website-row .blocked-count"), browserTotal, "website rows must add up to the total");
+    assert.strictEqual(await sumOfCounts("#blocked-list li.blocked-row:not(.website-row) .blocked-count"), browserTotal, "source rows must add up to the total");
+    await page.click("#expand-blocked");
 
     // Pick a deterministic site and check every site-scoped section.
     const target = await pickTarget(page, ["127.0.0.1", "example.com"]);
-    assert.match(await page.locator("#block-unit").innerText(), /on this site/, "the Ads count must follow the picker");
+    assert.strictEqual(await page.locator("#cookies").isVisible(), true, "picking a site reveals its cookies");
+    assert.strictEqual(await page.locator("#inspect-site").isVisible(), false, "the inspect card makes way for the site view");
+    assert.strictEqual(await page.locator("#site-tabs").isVisible(), true, "site mode offers the jump bar");
+    assert.ok((await page.locator("#site-tabs a").count()) >= 5, "the jump bar links to every site section");
+    assert.match(
+      await page.locator("#block-unit").innerText(),
+      /^blocked requests from \d+ sources? on this site$/,
+      "the Ads count must follow the picker and state its source count"
+    );
     assert.strictEqual(await page.locator("#expected-toggle").isDisabled(), false, "site actions work for a picked site");
 
     // Top blocked hosts use horizontal bars, so long hostnames cannot collide.
@@ -227,6 +261,18 @@ describe("WebGuard end to end", () => {
     const blockedText = await page.locator("#blocked-list").innerText();
     assert.ok(blockedText.length > 0, "the blocked list must have content");
     assert.ok(!/Blocked today|Blocked in this tab|Blocking is/.test(blockedText), `the blocked list repeats summary rows: ${blockedText}`);
+
+    // The selected-site list is complete: every source row adds up to the total.
+    const siteTotal = Number(((await page.locator("#block-count").getAttribute("title")) ?? "0").split(" ")[0]);
+    const siteRowSum = await page.locator("#blocked-list li.blocked-row .blocked-count").evaluateAll((nodes) =>
+      nodes.reduce((sum, node) => sum + Number((node.title ?? "0").split(" ")[0]), 0));
+    assert.strictEqual(siteRowSum, siteTotal, `source rows (${siteRowSum}) must add up to the site total (${siteTotal})`);
+    const trackerLabels = await page.locator("#chart-trackers svg text.label").allInnerTexts();
+    assert.ok(trackerLabels.length <= 8, `the chart shows at most seven sources plus Other, got ${trackerLabels.length}`);
+    // The bars (including the "Other (N sources)" bar) must add up to the total.
+    const chartTotal = await page.locator("#chart-trackers svg text.value").evaluateAll((nodes) =>
+      nodes.reduce((sum, node) => sum + Number(node.textContent ?? "0"), 0));
+    assert.strictEqual(chartTotal, siteTotal, `chart bars (${chartTotal}) must add up to the site total (${siteTotal})`);
     await page.click("#expand-blocked");
     assert.strictEqual(await page.locator("#blocked-panel").isVisible(), false, "the same button hides the list");
 
@@ -243,9 +289,8 @@ describe("WebGuard end to end", () => {
     assert.ok(/not found in the breach list|appeared in/i.test(breach), `unexpected breach summary: ${breach}`);
     const attribution = await page.locator("#breach-attribution").innerText();
     assert.ok(attribution.includes("Have I Been Pwned"), "breach attribution required");
-    assert.ok((await page.locator("#self-check-links a").count()) >= 3, "self-check links required");
-
-    assert.ok((await page.locator("#tls-note").innerText()).includes("TLS certificate details are not available"));
+    assert.ok(!/^Source:\s*Source:/.test(attribution), `attribution must not repeat its prefix: ${attribution}`);
+    assert.strictEqual(await page.locator("#self-check-links").count(), 0, "the self-check link list is gone");
 
     // Cookie rows must never carry a value, only metadata.
     const cookieRows = await page.locator("#cookies-list li").allInnerTexts();
@@ -261,6 +306,53 @@ describe("WebGuard end to end", () => {
     assert.deepStrictEqual(consoleErrors, [], "dashboard must not log console errors");
     assert.ok(target, "a site was selected");
     await page.close();
+  });
+
+  it("applies the Today / Yesterday / Past 7 days filter to the counts", async () => {
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+
+    // Deterministic day buckets, including one from nine days ago that must not
+    // be counted by the seven-day frame.
+    const seeded = await page.evaluate(async () => {
+      const day = (offset) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
+      const previous = (await chrome.storage.local.get("blockingCounts")).blockingCounts ?? null;
+      await chrome.storage.local.set({
+        blockingCounts: {
+          tabs: {},
+          tabHosts: {},
+          sites: {},
+          hosts: { "ads.example": 114 },
+          days: { [day(0)]: 41, [day(1)]: 37, [day(2)]: 23, [day(9)]: 13 }
+        }
+      });
+      return { previous };
+    });
+
+    try {
+      // The live refresh listener repaints after the write.
+      await page.waitForFunction(() => document.getElementById("block-count")?.textContent === "41", null, { timeout: 15_000 });
+      assert.ok((await page.locator("#overview-stats").innerText()).includes("Blocked today"), "today is the default frame");
+
+      await page.selectOption("#frame-select", "yesterday");
+      await page.waitForFunction(() => document.getElementById("block-count")?.textContent === "37", null, { timeout: 10_000 });
+      assert.ok((await page.locator("#overview-stats").innerText()).includes("Blocked yesterday"), "the KPI label follows the frame");
+
+      await page.selectOption("#frame-select", "week");
+      await page.waitForFunction(() => document.getElementById("block-count")?.textContent === "101", null, { timeout: 10_000 });
+      const kpis = await page.locator("#overview-stats").innerText();
+      assert.ok(kpis.includes("Blocked (7 days)"), `unexpected KPI label: ${kpis}`);
+      // 41 + 37 + 23; the nine-day-old bucket (13) is outside the window.
+      assert.ok(!(await page.locator("#overview-stats").innerText()).includes("114"), "out-of-window counts must not be summed");
+      assert.ok((await page.locator("#chart-blocked svg rect.bar").count()) >= 7, "the week chart still shows seven bars");
+    } finally {
+      await page.evaluate(async (previous) => {
+        if (previous === null) await chrome.storage.local.remove("blockingCounts");
+        else await chrome.storage.local.set({ blockingCounts: previous });
+      }, seeded.previous);
+      await page.close();
+    }
   });
 
   it("looks up RDAP on demand and reports a real registry", async () => {
@@ -716,16 +808,31 @@ describe("WebGuard end to end", () => {
 
     // "See blocked ads" opens a host list with per-host counts.
     assert.strictEqual(await page.locator("#blocked-panel").isVisible(), false, "the blocked list starts collapsed");
-    assert.strictEqual(await page.locator("#see-blocked").innerText(), "See blocked ads");
+    assert.strictEqual(await page.locator("#see-blocked").innerText(), "See blocked requests");
     await page.click("#see-blocked");
-    await page.waitForFunction(() => document.getElementById("see-blocked")?.textContent === "Hide blocked ads", null, { timeout: 10_000 });
+    await page.waitForFunction(() => document.getElementById("see-blocked")?.textContent === "Hide blocked requests", null, { timeout: 10_000 });
     assert.strictEqual(await page.locator("#blocked-panel").isVisible(), true, "clicking must reveal the blocked list");
     const blockedRows = await page.locator("#blocked-list li.blocked-row").count();
     const blockedText = await page.locator("#blocked-list").innerText();
     assert.ok(blockedRows >= 1, `the seeded trackers must appear in the blocked list, got "${blockedText}"`);
     for (const row of await page.locator("#blocked-list li.blocked-row").all()) {
-      assert.match(await row.locator(".blocked-count").innerText(), /^\d+$/, "every blocked row needs a count");
+      assert.match(await row.locator(".blocked-count").innerText(), /^[\d.]+k?$/, "every blocked row needs a count");
     }
+    // The expanded list must describe the same page as the hero number, not the
+    // browser-wide top hosts: the per-host counts add up to the tab total.
+    const tabTitle = (await page.locator("#tab-count").getAttribute("title")) ?? "0";
+    const tabTotal = Number(tabTitle.split(" ")[0]);
+    const rowSum = await page.locator("#blocked-list li.blocked-row .blocked-count").evaluateAll((nodes) =>
+      nodes.reduce((sum, node) => sum + Number(node.title.split(" ")[0]), 0)
+    );
+    assert.strictEqual(rowSum, tabTotal, `per-source counts (${rowSum}) must add up to the tab count (${tabTotal})`);
+    // The hero states the same contribution maths in words.
+    assert.match(
+      await page.locator("#block-sub").innerText(),
+      /^blocked requests from \d+ sources? on this page$/,
+      "the popup must say how many sources make up the hero number"
+    );
+    assert.strictEqual(await page.locator("#breach-card").isVisible(), false, "no breach chip without a match");
     const openShotDir = join(__dirname, "..", "test-results", "screenshots");
     await mkdir(openShotDir, { recursive: true });
     await page.screenshot({ path: join(openShotDir, "popup-live-blocked.png"), fullPage: true });
@@ -951,7 +1058,7 @@ describe("WebGuard end to end", () => {
     await page.waitForTimeout(1_000);
 
     const overview = (await page.locator("#overview-stats").innerText()).replace(/\s+/g, " ");
-    assert.ok(/Sites recorded 0/.test(overview), `history must be empty after clearing, got: ${overview}`);
+    assert.ok(/Visits recorded 0/.test(overview), `history must be empty after clearing, got: ${overview}`);
     assert.ok(/Blocked today 0/.test(overview), `counters must reset after clearing, got: ${overview}`);
     assert.ok((await page.locator("#allowlist-list").innerText()).includes("No allowlisted sites"), "allowlist must be cleared");
     assert.ok(/No sites recorded|unavailable/i.test(await page.locator("#history-list").innerText()), "history view must be empty");

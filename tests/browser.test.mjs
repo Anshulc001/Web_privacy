@@ -56,8 +56,8 @@ describe('WebGuard browser + extension checks', () => {
       'status', 'blocking-toggle', 'tab-count', 'see-blocked', 'blocked-panel', 'blocked-list',
       'allowlist-toggle', 'cookies-heading', 'cookie-total', 'cookie-unit', 'cookie-empty',
       'see-cookies', 'cookies-panel', 'cookie-summary', 'cookies',
-      'permissions-heading', 'permissions', 'breach-heading', 'breach-list',
-      'open-dashboard',
+      'permissions-heading', 'permissions', 'breach-heading', 'breach-chip', 'breach-card',
+      'cookie-more', 'open-dashboard',
     ];
     for (const id of requiredIds) {
       assert.ok(new RegExp(`id=["']${id}["']`).test(html), `popup.html must contain element #${id}`);

@@ -1,3 +1,5 @@
+import { normalizeHost } from "../lib/host-match.mjs";
+
 export const HISTORY_KEY = "historyEvents";
 export const MIN_RETENTION_HOURS = 24;
 export const MAX_RETENTION_HOURS = 168;
@@ -6,15 +8,10 @@ function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// One canonical hostname validator lives in lib/host-match.mjs; a second copy
+// here drifted from it and produced two different answers for the same input.
 export function normalizeHostname(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const hostname = value.trim().toLowerCase().replace(/\.$/, "");
-  if (!hostname || hostname.length > 253 || /[^a-z0-9.:-]/.test(hostname)) {
-    return null;
-  }
-  return hostname;
+  return normalizeHost(value);
 }
 
 export function hostnameFromUrl(value) {

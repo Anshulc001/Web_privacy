@@ -1,12 +1,15 @@
 export const HISTORY_PRUNE_ALARM = "webguard-history-prune";
 
-export function createAlarmManager(alarms, historyStore, settingsStore) {
+export function createAlarmManager(alarms, historyStore, settingsStore, blockingCounter = null) {
   if (!alarms || typeof alarms.get !== "function" || typeof alarms.create !== "function" || !alarms.onAlarm?.addListener) {
     throw new TypeError("A Chrome-compatible alarms API is required.");
   }
 
   async function pruneHistory() {
     const settings = await settingsStore.load();
+    // Blocking counts keep their own day buckets, which historyStore.prune does
+    // not touch, so they have to expire on the same schedule.
+    if (blockingCounter) await blockingCounter.prune(settings.historyRetentionHours);
     return historyStore.prune(settings.historyRetentionHours);
   }
 

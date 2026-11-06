@@ -18,7 +18,6 @@
           </span>
           <div class="brand-text">
             <h1>WebGuard</h1>
-            <p id="privacy-note">All data stays on this device. The only network calls are daily blocklist downloads and RDAP lookups you start yourself.</p>
           </div>
           <p id="status" role="status">Loading…</p>
         </div>
@@ -55,6 +54,21 @@
         <p id="target-summary"></p>
       </section>
 
+      <nav id="site-tabs" class="site-tabs" aria-label="Selected site sections" hidden>
+        <a href="#overview">Overview &amp; Blocking</a>
+        <a href="#cookies">Cookies</a>
+        <a href="#permissions">Permissions</a>
+        <a href="#domain">Risk &amp; Domain</a>
+        <a href="#breach">Breaches</a>
+      </nav>
+
+      <section id="inspect-site" aria-labelledby="inspect-heading">
+        <h2 id="inspect-heading">Inspect a site</h2>
+        <p class="hint">Cookies, permissions, registry data and breaches are per-site. Pick one below, or choose it from the list above.</p>
+        <div id="inspect-chips" class="chips"></div>
+        <p id="inspect-empty" class="hint" hidden>No sites recorded yet. Browse somewhere and come back.</p>
+      </section>
+
       <section id="overview" aria-labelledby="overview-heading">
         <h2 id="overview-heading">Overview</h2>
         <ul id="overview-stats" class="kpis"></ul>
@@ -67,9 +81,6 @@
 
         <h3>Top blocked hosts</h3>
         <div id="chart-trackers" class="chart"></div>
-
-        <h3>Data freshness</h3>
-        <ul id="data-status"></ul>
       </section>
 
       <section id="cookies" aria-labelledby="cookies-heading">
@@ -81,7 +92,6 @@
 
       <section id="permissions" aria-labelledby="permissions-heading">
         <h2 id="permissions-heading">Permissions</h2>
-        <p class="hint">Not a verdict. "Allowed" means the site can use that permission right now; "not given" means it never asked or you dismissed it.</p>
         <ul id="permissions-list"></ul>
         <p id="permissions-alerts"></p>
         <button id="expected-toggle" type="button">Mark site as expected</button>
@@ -93,7 +103,6 @@
         <button id="rdap-lookup" type="button" class="btn-primary">Look up RDAP</button>
         <p class="hint" id="rdap-note">RDAP is the public domain registry lookup that replaced WHOIS. It returns who registered a domain and the registration date, straight from the registry.</p>
         <dl id="domain-details"></dl>
-        <p class="hint" id="tls-note"></p>
       </section>
 
       <section id="ads" aria-labelledby="ads-heading">
@@ -126,8 +135,6 @@
         <ul id="breach-list"></ul>
         <p class="hint">A match means this site appeared in a known breach. It does not mean your account was leaked.</p>
         <p id="breach-attribution"></p>
-        <h3>Check your own email</h3>
-        <ul id="self-check-links"></ul>
       </section>
 
       <section id="history" aria-labelledby="history-heading">
@@ -140,6 +147,7 @@
 
       <section id="settings" aria-labelledby="settings-heading">
         <h2 id="settings-heading">Settings</h2>
+        <p class="hint" id="sync-status"></p>
         <label for="retention-select">History retention</label>
         <select id="retention-select"></select>
         <label class="switch"><input id="history-paused" type="checkbox"> Pause history recording</label>

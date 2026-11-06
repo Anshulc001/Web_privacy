@@ -1,11 +1,12 @@
 import { createAlarmManager } from "./alarms.mjs";
 import { createBlockingManager } from "./blocking-manager.mjs";
-import { createBlockingCounter } from "./blocking-counter.mjs";
+import { createBlockingCounter, isBlockedByClient, shouldCountBlockedRequest } from "./blocking-counter.mjs";
 import { BLOCKING_DATA_KEY, createDataSync } from "./data-sync.mjs";
 import { BREACH_DATA_KEY, checkHostForBreaches } from "../lib/breach-checker.mjs";
 import { inspectSiteCookies } from "../lib/cookie-inspector.mjs";
 import { createDashboardService } from "./dashboard-service.mjs";
-import { createBootstrapStore, IANA_BOOTSTRAP_URL, lookupDomain, TLS_LIMITATION } from "../lib/domain-info.mjs";
+import { DOMAIN_CACHE_KEY, cachedDomainInfo, createBootstrapStore, IANA_BOOTSTRAP_URL, lookupDomain, TLS_LIMITATION } from "../lib/domain-info.mjs";
+import { formatBadgeCount } from "../lib/format.mjs";
 import { scoreRisk } from "../lib/risk-score.mjs";
 import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs";
 import { inspectUrl } from "../lib/url-checks.mjs";
@@ -16,7 +17,8 @@ import { createSettingsStore } from "../lib/storage-settings.mjs";
 
 const historyStore = createHistoryStore(chrome.storage.local);
 const settingsStore = createSettingsStore(chrome.storage.local);
-const alarmManager = createAlarmManager(chrome.alarms, historyStore, settingsStore);
+const blockingCounter = createBlockingCounter(chrome.storage.local);
+const alarmManager = createAlarmManager(chrome.alarms, historyStore, settingsStore, blockingCounter);
 const recordTopLevelNavigation = createNavigationRecorder(chrome.tabs, historyStore, settingsStore);
 const observationStore = createObservationStore(chrome.storage.local);
 const remoteBlockingHosts = async () => {
@@ -26,8 +28,26 @@ const remoteBlockingHosts = async () => {
 };
 const blockingManager = createBlockingManager(chrome.declarativeNetRequest, settingsStore, remoteBlockingHosts);
 const dataSync = createDataSync(fetch, chrome.storage.local, blockingManager, settingsStore);
-const blockingCounter = createBlockingCounter(chrome.storage.local);
 const DATA_SYNC_ALARM = "webguard-data-sync";
+
+// A blocked-request storm fires thousands of events, so the hot path must not
+// read storage for every one. The cache is dropped whenever settings change.
+let settingsCache = null;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes?.settings) settingsCache = null;
+});
+async function activeSettings() {
+  if (!settingsCache) settingsCache = await settingsStore.load();
+  return settingsCache;
+}
+
+// The page each tab is showing, kept from navigation events: reading tabs.get()
+// for every blocked request would be worse than the storm it is guarding.
+const tabSites = new Map();
+chrome.tabs.onRemoved.addListener((tabId) => tabSites.delete(tabId));
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (typeof info?.url === "string") tabSites.set(tabId, hostnameFromUrl(info.url));
+});
 
 const bootstrapStore = createBootstrapStore(chrome.storage.local);
 const dashboardService = createDashboardService({
@@ -41,24 +61,14 @@ const dashboardService = createDashboardService({
   blockingCounter
 });
 
-async function cachedDomainInfo(hostname) {
-  const stored = await chrome.storage.local.get("domainInfoCache");
-  const cache = stored?.domainInfoCache && typeof stored.domainInfoCache === "object" ? stored.domainInfoCache : {};
-  const entry = cache[hostname];
-  if (!entry || typeof entry !== "object" || typeof entry.at !== "number") return null;
-  // RDAP answers change slowly; keep them for a day so repeat views stay local.
-  if (Date.now() - entry.at > 86_400_000) return null;
-  return entry.value ?? null;
-}
-
 async function storeDomainInfo(hostname, value) {
   try {
-    const stored = await chrome.storage.local.get("domainInfoCache");
-    const cache = stored?.domainInfoCache && typeof stored.domainInfoCache === "object" ? stored.domainInfoCache : {};
+    const stored = await chrome.storage.local.get(DOMAIN_CACHE_KEY);
+    const cache = stored?.[DOMAIN_CACHE_KEY] && typeof stored[DOMAIN_CACHE_KEY] === "object" ? stored[DOMAIN_CACHE_KEY] : {};
     const entries = Object.entries(cache).slice(-50);
     const next = Object.fromEntries(entries);
     next[hostname] = { at: Date.now(), value };
-    await chrome.storage.local.set({ domainInfoCache: next });
+    await chrome.storage.local.set({ [DOMAIN_CACHE_KEY]: next });
   } catch (error) {
     console.error("WebGuard could not cache domain info.", error);
   }
@@ -74,7 +84,7 @@ async function suspiciousInfo(tabId) {
   }
   const stored = await chrome.storage.local.get(THREAT_DATA_KEY);
   const threat = checkHostForThreats(inspected.hostname, stored?.[THREAT_DATA_KEY]);
-  const domainInfo = await cachedDomainInfo(inspected.hostname);
+  const domainInfo = await cachedDomainInfo(chrome.storage.local, inspected.hostname);
   const risk = scoreRisk({ urlFindings: inspected.findings, threat, domainInfo });
   return {
     status: "ok",
@@ -126,23 +136,58 @@ async function breachInfo(tabId) {
   return { hostname, ...checkHostForBreaches(hostname, stored?.[BREACH_DATA_KEY]) };
 }
 
+/**
+ * The content script reports what the page loaded after document_idle. A popup
+ * opened immediately can therefore miss it; frame hostnames recovered from the
+ * browser's own navigation records are a fast, local stand-in for third-party
+ * hosts until the real observation arrives.
+ */
+async function observationFor(tabId, hostname) {
+  const observation = await observationStore.get(hostname);
+  if (observation) return observation;
+  try {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    const thirdPartyHosts = [...new Set((Array.isArray(frames) ? frames : [])
+      .map((frame) => hostnameFromUrl(frame?.url))
+      .filter((host) => host && host !== hostname))];
+    if (thirdPartyHosts.length > 0) return { thirdPartyHosts, permissionStates: {} };
+  } catch {
+    // Frame records are a nicety; without them the cookie list is just first-party.
+  }
+  return null;
+}
+
 async function currentSitePrivacy(tabId) {
   if (!Number.isInteger(tabId) || tabId < 0) throw new TypeError("A valid tab ID is required.");
   const tab = await chrome.tabs.get(tabId);
   const hostname = hostnameFromUrl(tab?.url);
   if (!hostname) throw new TypeError("Only web pages have site privacy details.");
-  const observation = await observationStore.get(hostname);
+  const observation = await observationFor(tabId, hostname);
+  const settings = await activeSettings();
   const cookies = await inspectSiteCookies(chrome.cookies, hostname, observation?.thirdPartyHosts ?? []);
-  const audit = auditPermissions(hostname, observation?.permissionStates, (await settingsStore.load()).expectedSites);
-  const settings = await settingsStore.load();
+  const audit = auditPermissions(hostname, observation?.permissionStates, settings.expectedSites);
   const reported = audit.states && typeof audit.states === "object"
     ? Object.entries(audit.states).filter(([, state]) => state && state !== "unavailable")
     : [];
-  return { hostname, cookies, permissions: audit.states, permissionAlerts: audit.alerts, expected: audit.expected, permissionStatesAvailable: reported.length > 0, blocking: await blockingCounter.summary(tabId), blockingEnabled: settings.blockingEnabled, allowlisted: settings.siteAllowlist.includes(hostname) };
+  const stored = await chrome.storage.local.get(BREACH_DATA_KEY);
+  return {
+    hostname,
+    cookies,
+    permissions: audit.states,
+    permissionAlerts: audit.alerts,
+    expected: audit.expected,
+    permissionStatesAvailable: reported.length > 0,
+    blocking: await blockingCounter.summary(tabId),
+    blockingEnabled: settings.blockingEnabled,
+    allowlisted: settings.siteAllowlist.includes(hostname),
+    // Sent with the site details so the popup does not need a second round-trip.
+    breach: { hostname, ...checkHostForBreaches(hostname, stored?.[BREACH_DATA_KEY]) }
+  };
 }
 
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details?.frameId === 0) {
+    tabSites.set(details.tabId, hostnameFromUrl(details.url));
     void blockingCounter
       .resetTab(details.tabId)
       .then(() => updateBadge(details.tabId))
@@ -154,8 +199,17 @@ chrome.webNavigation.onCommitted.addListener((details) => {
 });
 async function updateBadge(tabId) {
   try {
-    const { tab } = await blockingCounter.summary(tabId);
-    await chrome.action.setBadgeText({ tabId, text: tab > 0 ? String(tab) : "" });
+    const settings = await activeSettings();
+    let text = "";
+    if (settings.blockingEnabled) {
+      const tab = await chrome.tabs.get(tabId);
+      const site = tabSites.get(tabId) ?? hostnameFromUrl(tab?.url);
+      if (shouldCountBlockedRequest(settings, site)) {
+        const { tab: count } = await blockingCounter.summary(tabId);
+        text = formatBadgeCount(count);
+      }
+    }
+    await chrome.action.setBadgeText({ tabId, text });
     await chrome.action.setBadgeBackgroundColor({ tabId, color: "#1f6feb" });
   } catch {
     // The tab may already be gone; a missing badge is not an error worth surfacing.
@@ -163,10 +217,15 @@ async function updateBadge(tabId) {
 }
 
 chrome.webRequest.onErrorOccurred.addListener((details) => {
-  void blockingCounter
-    .record(details)
-    .then((recorded) => (recorded ? updateBadge(details.tabId) : undefined))
-    .catch((error) => console.error("WebGuard could not count a blocked request.", error));
+  void (async () => {
+    if (!isBlockedByClient(details)) return;
+    const settings = await activeSettings();
+    const site = tabSites.get(details.tabId) ?? hostnameFromUrl(details.initiator);
+    // A paused or allowlisted site must not keep inflating the count.
+    if (!shouldCountBlockedRequest(settings, site)) return;
+    const recorded = await blockingCounter.record(details, site);
+    if (recorded) await updateBadge(details.tabId);
+  })().catch((error) => console.error("WebGuard could not count a blocked request.", error));
 }, { urls: ["<all_urls>"] });
 
 chrome.runtime.onMessage.addListener(async (message, sender) => {

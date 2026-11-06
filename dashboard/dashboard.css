@@ -277,37 +277,31 @@ section > h2 + h3, h2 + h3 { margin-top: var(--s4); }
 
 /* ---------- lists used as data rows ---------- */
 
-#data-status li,
 #allowlist-list li,
 #cookies-list li,
 #permissions-list li,
 #risk-reasons li,
 #breach-list li,
-#history-list li,
-#self-check-links li {
+#history-list li {
   padding: 7px 0;
   border-bottom: 1px solid var(--border);
   font-size: 0.9rem;
 }
 
-#data-status li:last-child,
 #allowlist-list li:last-child,
 #cookies-list li:last-child,
 #permissions-list li:last-child,
 #risk-reasons li:last-child,
 #breach-list li:last-child,
-#history-list li:last-child,
-#self-check-links li:last-child {
+#history-list li:last-child {
   border-bottom: none;
   padding-bottom: 0;
 }
 
-#self-check-links, #breach-list, #allowlist-list,
-#cookies-list, #permissions-list, #risk-reasons, #data-status, #history-list {
+#breach-list, #allowlist-list,
+#cookies-list, #permissions-list, #risk-reasons, #history-list {
   margin: var(--s2) 0 var(--s3);
 }
-
-#self-check-links li a { font-weight: 500; }
 
 /* ---------- forms and controls ---------- */
 
@@ -496,7 +490,35 @@ button.btn-danger:hover { border-color: var(--danger); background: color-mix(in 
   list-style: none;
   margin: 0;
   padding: 0;
+  /* Every source is listed, so the panel scrolls instead of the page growing. */
+  max-height: 340px;
+  overflow-y: auto;
 }
+
+#blocked-list li.blocked-group {
+  padding-top: var(--s3);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#blocked-list li.blocked-group:first-child { padding-top: 0; }
+
+.blocked-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.blocked-link:hover { text-decoration: underline; }
 
 #blocked-list li {
   padding: 7px 0;
@@ -529,12 +551,6 @@ button.btn-danger:hover { border-color: var(--danger); background: color-mix(in 
 }
 
 #blocked-source { margin-top: var(--s2); }
-
-/* ---------- Popup-style shared blocked-item styling ---------- */
-
-.blocked-item {
-  display: block;
-}
 
 /* ---------- domain info table ---------- */
 
@@ -573,7 +589,7 @@ dl#domain-details dd { margin: 0; font-weight: 500; }
   height: 0.2em;
 }
 
-#permissions-alerts, #risk-disclaimer, #tls-note {
+#permissions-alerts, #risk-disclaimer {
   color: var(--muted);
   font-size: 0.82rem;
   margin-top: var(--s2);
@@ -585,9 +601,42 @@ dl#domain-details dd { margin: 0; font-weight: 500; }
   margin: var(--s2) 0;
 }
 
-/* ---------- misc ---------- */
+/* ---------- site mode / inspect chips ---------- */
 
-#privacy-note { max-width: 62ch; }
+.site-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  margin: calc(-1 * var(--s2)) 0 0;
+}
+
+.site-tabs[hidden] { display: none; }
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-top: var(--s3);
+}
+
+.chip {
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+/* ---------- misc ---------- */
 
 section#settings h3 { margin-top: var(--s5); }
 section#settings h3:first-of-type { margin-top: var(--s4); }
@@ -596,7 +645,6 @@ section#settings h3:first-of-type { margin-top: var(--s4); }
   .topbar, main { padding-left: var(--s4); padding-right: var(--s4); }
   section { padding: var(--s4); }
   .brand { flex-wrap: wrap; }
-  #privacy-note { font-size: 0.78rem; }
   #status { font-size: 0.72rem; }
   /* Wrap the nav instead of cutting pills off the edge, and keep the KPI grid
      balanced rather than 3 + 1. */

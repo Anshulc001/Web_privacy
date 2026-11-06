@@ -55,16 +55,33 @@ test("allowlist rules match the document itself and include resourceTypes", asyn
   // Chrome rejects allowAllRequests without resourceTypes, which silently breaks
   // the allowlist, so this is a hard requirement rather than a style choice.
   assert.deepEqual(update.removeRuleIds, [2_000_001]);
-  assert.equal(update.addRules.length, 1);
-  assert.equal(update.addRules[0].action.type, "allowAllRequests");
+  const documentRule = update.addRules.find((rule) => rule.action.type === "allowAllRequests");
+  assert.ok(documentRule, "the document rule must still be created");
   // allowAllRequests only covers requests the rule matches, and a top-level
   // navigation has no initiator domain, so the rule must match the URL itself.
-  assert.equal(update.addRules[0].condition.urlFilter, "||allowed.test^");
-  assert.equal(update.addRules[0].condition.initiatorDomains, undefined);
-  assert.ok(update.addRules[0].priority > 1, "the allow rule must outrank blocking rules");
+  assert.equal(documentRule.condition.urlFilter, "||allowed.test^");
+  assert.equal(documentRule.condition.initiatorDomains, undefined);
+  assert.ok(documentRule.priority > 1, "the allow rule must outrank blocking rules");
   // Chrome permits only main_frame and sub_frame here; anything else makes the
   // whole update fail and silently disables the allowlist.
-  assert.deepEqual(update.addRules[0].condition.resourceTypes, ["main_frame", "sub_frame"]);
+  assert.deepEqual(documentRule.condition.resourceTypes, ["main_frame", "sub_frame"]);
+});
+
+test("allowlist also allows the page's subresources by initiator", async () => {
+  const dnr = fakeDnr();
+  const manager = createBlockingManager(dnr, { async save() {} });
+  await manager.setAllowlist(["edition.cnn.com"]);
+  const update = dnr.calls[0][1];
+
+  // Without this rule the document loads but its XHRs and images stay blocked.
+  const resourceRule = update.addRules.find((rule) => rule.action.type === "allow");
+  assert.ok(resourceRule, "a subresource allow rule must be created");
+  assert.ok(resourceRule.priority > 1);
+  // The registrable domain extends the allow to sibling subdomains.
+  assert.deepEqual(resourceRule.condition.initiatorDomains, ["edition.cnn.com", "cnn.com"]);
+  assert.ok(resourceRule.condition.resourceTypes.includes("xmlhttprequest"));
+  assert.ok(resourceRule.condition.resourceTypes.includes("image"));
+  assert.ok(!resourceRule.condition.resourceTypes.includes("main_frame"));
 });
 
 test("allowlist normalizes duplicates and drops invalid hosts", async () => {
@@ -73,5 +90,7 @@ test("allowlist normalizes duplicates and drops invalid hosts", async () => {
   const manager = createBlockingManager(dnr, { async save(value) { saved = value; return value; } });
   await manager.setAllowlist(["b.test", "a.test", "b.test", "bad host!"]);
   assert.deepEqual(saved.siteAllowlist, ["a.test", "b.test"]);
-  assert.equal(dnr.calls[0][1].addRules.length, 2);
+  // Each host gets a document rule plus a subresource rule.
+  assert.equal(dnr.calls[0][1].addRules.length, 4);
+  assert.equal(new Set(dnr.calls[0][1].addRules.map((rule) => rule.id)).size, 4, "rule ids must be unique");
 });

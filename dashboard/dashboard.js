@@ -1,7 +1,11 @@
 import { barChartModel, CHART_HEIGHT, CHART_WIDTH, horizontalBarModel } from "./charts.mjs";
+import { formatCount } from "../lib/format.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const state = { target: null, overview: null, site: null, frame: "today" };
+const state = { target: null, targets: null, overview: null, site: null, frame: "today" };
+// These panels describe one site; in "All sites" mode they are hidden rather
+// than left on the page as boxes saying "select a site".
+const SITE_ONLY_SECTIONS = ["cookies", "permissions", "domain", "suspicious", "breach"];
 const PERMISSION_STATE_LABELS = { granted: "allowed", denied: "not permitted", prompt: "not given" };
 
 const el = (id) => document.getElementById(id);
@@ -45,19 +49,86 @@ function browserDays() {
   return Object.fromEntries((state.overview?.blocking.series ?? []).map((day) => [day.date, day.count]));
 }
 
+/** Sums the per-day source maps over the selected time frame. */
+function frameSourceTotals(dayHosts) {
+  const totals = new Map();
+  for (const date of frameDates()) {
+    const hosts = dayHosts?.[date];
+    if (!hosts || typeof hosts !== "object") continue;
+    for (const [host, count] of Object.entries(hosts)) {
+      if (typeof host !== "string" || !Number.isFinite(count) || count <= 0) continue;
+      totals.set(host, (totals.get(host) ?? 0) + count);
+    }
+  }
+  return totals;
+}
+
+/**
+ * Source rows for the frame, most frequent first. If the stored source maps do
+ * not cover the whole framed total (older data, requests with no page to
+ * attribute), the remainder is shown as its own row so the list always adds up
+ * to the number above it.
+ */
+function frameSourceRows(dayHosts, total) {
+  const rows = [...frameSourceTotals(dayHosts)]
+    .map(([host, count]) => ({ host, count }))
+    .sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
+  const covered = rows.reduce((sum, row) => sum + row.count, 0);
+  if (total > covered) rows.push({ host: "Other / unattributed", count: total - covered, unattributed: true });
+  return rows;
+}
+
+function sourceWord(count) {
+  return count === 1 ? "source" : "sources";
+}
+
+/** All-sites mode: blocked requests and source count for each website. */
+function frameWebsiteRows(total) {
+  const rows = [];
+  for (const entry of state.overview?.blocking.sites ?? []) {
+    const siteTotal = frameTotal(entry.days ?? {});
+    if (siteTotal <= 0) continue;
+    rows.push({ host: entry.host, count: siteTotal, sources: frameSourceRows(entry.dayHosts, siteTotal).length });
+  }
+  rows.sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
+  const covered = rows.reduce((sum, row) => sum + row.count, 0);
+  if (total > covered) rows.push({ host: "Other / unattributed", count: total - covered, sources: 0, unattributed: true });
+  return rows;
+}
+
+/** Top seven sources plus a single "Other" bar, so the chart totals the frame. */
+function rankedSourceItems(dayHosts, total) {
+  const rows = frameSourceRows(dayHosts, total);
+  const items = rows.slice(0, 7).map((row) => ({ label: row.host, value: row.count }));
+  const rest = rows.slice(7);
+  if (rest.length > 0) {
+    items.push({
+      label: `Other (${rest.length} ${sourceWord(rest.length)})`,
+      value: rest.reduce((sum, row) => sum + row.count, 0)
+    });
+  }
+  return items;
+}
+
 /** A blocked host row: the host on the left, its count in a badge on the right. */
 function blockedRow(host, count) {
   const item = document.createElement("li");
   item.className = "blocked-row";
-  item.append(text("span", host, "blocked-host"), text("span", count, "blocked-count"));
+  const badge = text("span", formatCount(count), "blocked-count");
+  badge.title = `${count} blocked request(s)`;
+  item.append(text("span", host, "blocked-host"), badge);
   return item;
 }
 
 /** One KPI tile: a small label, a large number, and an optional footnote. */
-function kpiCard(label, value, hint) {
+function kpiCard(label, value, hint, exact) {
   const item = document.createElement("li");
   item.className = "kpi";
-  item.append(text("span", label, "kpi-label"), text("strong", value, "kpi-value"));
+  const number = text("strong", value, "kpi-value");
+  // Compact numbers keep a five-digit total from overflowing the tile; the
+  // exact value stays available on hover.
+  if (exact !== undefined) number.title = String(exact);
+  item.append(text("span", label, "kpi-label"), number);
   if (hint) item.append(text("span", hint, "kpi-hint"));
   return item;
 }
@@ -189,6 +260,13 @@ function fillTargetSelect(targets) {
   else state.target = null;
 }
 
+/** Label for the time frame currently selected in the header picker. */
+function frameLabel() {
+  if (state.frame === "yesterday") return "Blocked yesterday";
+  if (state.frame === "week") return "Blocked (7 days)";
+  return "Blocked today";
+}
+
 /** Overview tiles. With a site selected the blocked tile describes that site. */
 function renderKpis() {
   const overview = state.overview;
@@ -196,14 +274,10 @@ function renderKpis() {
   const stats = el("overview-stats");
   clear(stats);
   const site = state.target ? state.site : null;
-  const today = overview.blocking.series.at(-1)?.date ?? "";
-  const siteDays = site?.blocking?.days ?? {};
-  stats.append(kpiCard(
-    "Blocked today",
-    String(site ? (Number.isFinite(siteDays[today]) ? siteDays[today] : 0) : overview.blocking.today),
-    site ? "on this site" : "requests stopped"
-  ));
-  stats.append(kpiCard("Sites recorded", String(overview.history.totalEvents), `last ${dayLabel(overview.history.retentionHours)}`));
+  const days = site ? site.blocking?.days ?? {} : browserDays();
+  const total = frameTotal(days);
+  stats.append(kpiCard(frameLabel(), formatCount(total), site ? "on this site" : "requests stopped", total));
+  stats.append(kpiCard("Visits recorded", formatCount(overview.history.totalEvents), `last ${dayLabel(overview.history.retentionHours)}`, overview.history.totalEvents));
   stats.append(kpiCard("Blocking", overview.blocking.enabled ? "On" : "Off", `${overview.blocking.allowlist.length} allowlisted`));
   stats.append(kpiCard("History", overview.history.paused ? "Paused" : "Recording", `${dayLabel(overview.history.retentionHours)} retention`));
 }
@@ -234,7 +308,7 @@ function renderCharts() {
     );
     renderRankedBars(
       el("chart-trackers"),
-      (site.blocking?.hosts ?? []).slice(0, 7).map((entry) => ({ label: entry.host, value: entry.count })),
+      rankedSourceItems(site.blocking?.dayHosts, frameTotal(days)),
       "Top blocked hosts"
     );
     return;
@@ -252,7 +326,7 @@ function renderCharts() {
   );
   renderRankedBars(
     el("chart-trackers"),
-    overview.blocking.topHosts.slice(0, 7).map((entry) => ({ label: entry.host, value: entry.count })),
+    rankedSourceItems(overview.blocking.dayHosts, frameTotal(browserDays())),
     "Top blocked hosts"
   );
 }
@@ -267,9 +341,8 @@ async function loadOverview() {
   renderKpis();
   renderCharts();
 
-  const dataList = el("data-status");
-  clear(dataList);
-  for (const entry of overview.data) dataList.append(listItem(entry.text));
+  // One compact freshness line in Settings instead of an Overview block.
+  el("sync-status").textContent = overview.data.map((entry) => entry.text).join(" ");
 
   const allowlistList = el("allowlist-list");
   clear(allowlistList);
@@ -308,6 +381,35 @@ async function loadOverview() {
   }
 }
 
+/** A heading row inside the blocked list, so both breakdowns stay one list. */
+function blockedGroup(value) {
+  const item = document.createElement("li");
+  item.className = "blocked-group";
+  item.textContent = value;
+  return item;
+}
+
+/** All-sites mode: one clickable row per website, with its blocked total. */
+function websiteRow(entry) {
+  const item = document.createElement("li");
+  item.className = "blocked-row website-row";
+  const label = `${entry.host} — ${entry.count} blocked (${entry.sources} ${sourceWord(entry.sources)})`;
+  if (entry.unattributed) {
+    item.append(text("span", label, "blocked-host"));
+  } else {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "blocked-link";
+    button.textContent = label;
+    button.addEventListener("click", () => { void selectTarget(entry.host); });
+    item.append(button);
+  }
+  const badge = text("span", formatCount(entry.count), "blocked-count");
+  badge.title = `${entry.count} blocked request(s)`;
+  item.append(badge);
+  return item;
+}
+
 /** Fills the Ads section from the whole browser or from the selected site. */
 async function loadBlockedForSite() {
   const countEl = el("block-count");
@@ -317,19 +419,43 @@ async function loadBlockedForSite() {
   const site = state.target ? state.site : null;
 
   const days = site ? site.blocking?.days ?? {} : browserDays();
-  countEl.textContent = String(frameTotal(days));
-  unitEl.textContent = site ? "blocked requests on this site" : "blocked requests in this browser";
+  const total = frameTotal(days);
+  const rows = frameSourceRows(site ? site.blocking?.dayHosts : state.overview?.blocking.dayHosts, total);
+  countEl.textContent = formatCount(total);
+  countEl.title = `${total} blocked request(s)`;
 
   clear(list);
-  const hosts = site ? site.blocking?.hosts ?? [] : state.overview?.blocking.topHosts ?? [];
-  if (hosts.length === 0) {
-    list.textContent = site ? "No blocked requests recorded for this site yet." : "No blocked hosts recorded yet.";
-  } else {
-    for (const entry of hosts.slice(0, 10)) list.append(blockedRow(entry.host, entry.count));
+
+  if (site) {
+    unitEl.textContent = `blocked requests from ${rows.length} ${sourceWord(rows.length)} on this site`;
+    if (total === 0) {
+      list.textContent = "No blocked requests recorded for this site in this time frame.";
+    } else {
+      // Every source, not a top ten: the rows add up to the number above.
+      for (const row of rows) list.append(blockedRow(row.host, row.count));
+    }
+    sourceEl.textContent = "Every source blocked on this site in the selected time frame, most frequent first; the counts add up to the number above. Page URLs are never stored.";
+    return;
   }
-  sourceEl.textContent = site
-    ? "Hosts blocked while this site was open, most frequent first. Page URLs are never stored."
-    : "Host-level block counts recorded in this browser, most frequent first. Not a full request log, and page URLs are never stored.";
+
+  const websites = frameWebsiteRows(total);
+  const siteCount = websites.filter((entry) => !entry.unattributed).length;
+  unitEl.textContent = siteCount > 0
+    ? `blocked requests from ${rows.length} ${sourceWord(rows.length)} across ${siteCount} website${siteCount === 1 ? "" : "s"}`
+    : `blocked requests from ${rows.length} ${sourceWord(rows.length)} in this browser`;
+
+  if (total === 0) {
+    list.textContent = "No blocked requests recorded in this time frame.";
+    sourceEl.textContent = "Counts follow the selected time frame. Page URLs are never stored.";
+    return;
+  }
+
+  // Both breakdowns are shown, and each adds up to the number above.
+  list.append(blockedGroup("By website"));
+  for (const entry of websites) list.append(websiteRow(entry));
+  list.append(blockedGroup("By tracker source"));
+  for (const row of rows) list.append(blockedRow(row.host, row.count));
+  sourceEl.textContent = "By website and by tracker source, for the selected time frame; both lists add up to the number above. Not a full request log, and page URLs are never stored.";
 }
 
 async function loadSite(hostname) {
@@ -384,27 +510,7 @@ async function loadSite(hostname) {
   expectedButton.textContent = report.expected ? "Mark site as not expected" : "Mark site as expected";
   expectedButton.dataset.expected = String(report.expected);
 
-  el("domain-summary").textContent = report.domainInfo
-    ? `Cached registry data for ${report.hostname}.`
-    : "No registry data yet. Use the button to look this domain up.";
-  const details = el("domain-details");
-  clear(details);
-  if (report.domainInfo && report.domainInfo.status === "ok") {
-    const ageDays = Number(report.domainInfo.ageDays);
-    for (const [key, value] of Object.entries({
-      Registrar: report.domainInfo.registrar ?? "not reported",
-      Registered: report.domainInfo.registrationDate ?? "not reported",
-      Age: Number.isFinite(ageDays) ? `${ageDays} day${ageDays === 1 ? "" : "s"}` : "unknown",
-      "Source": report.domainInfo.source ?? "unknown"
-    })) {
-      const wrapper = document.createElement("div");
-      wrapper.append(text("dt", key), text("dd", value));
-      details.append(wrapper);
-    }
-  }
-  el("tls-note").textContent = report.suspicious.isHttps === null
-    ? "HTTPS status is unavailable for this site."
-    : "TLS certificate details are not available to browser extensions, so they are not shown here.";
+  renderDomainDetails(report.domainInfo, report.hostname);
 
   el("ads-status").textContent = `Blocking is ${state.overview?.blocking.enabled ? "on" : "off"} for this browser.`;
   el("allowlist-status").textContent = report.allowlisted ? "This site is allowlisted, so blocking is skipped here." : "This site is not allowlisted.";
@@ -441,29 +547,28 @@ async function loadSite(hostname) {
     link.target = "_blank";
     link.rel = "noreferrer noopener";
     link.textContent = breach.attribution.label;
-    attribution.append(text("span", "Source: "), link);
+    attribution.append(link);
   }
-  renderSelfCheckLinks(breach);
 }
 
-const DEFAULT_SELF_CHECK_LINKS = [
-  { label: "Have I Been Pwned", url: "https://haveibeenpwned.com" },
-  { label: "Mozilla Monitor", url: "https://monitor.mozilla.org" },
-  { label: "Google Password Checkup", url: "https://passwords.google.com/checkup" }
-];
-
-function renderSelfCheckLinks(breach) {
-  const links = el("self-check-links");
-  clear(links);
-  for (const entry of breach?.selfCheckLinks ?? DEFAULT_SELF_CHECK_LINKS) {
-    const link = document.createElement("a");
-    link.href = entry.url;
-    link.target = "_blank";
-    link.rel = "noreferrer noopener";
-    link.textContent = entry.label;
-    const item = document.createElement("li");
-    item.append(link);
-    links.append(item);
+/** Registry rows, painted from whatever RDAP answer is current. */
+function renderDomainDetails(info, hostname) {
+  el("domain-summary").textContent = info
+    ? `Cached registry data for ${hostname}.`
+    : "No registry data yet. Use the button to look this domain up.";
+  const details = el("domain-details");
+  clear(details);
+  if (!info || info.status !== "ok") return;
+  const ageDays = Number(info.ageDays);
+  for (const [key, value] of Object.entries({
+    Registrar: info.registrar ?? "not reported",
+    Registered: info.registrationDate ?? "not reported",
+    Age: Number.isFinite(ageDays) ? `${ageDays} day${ageDays === 1 ? "" : "s"}` : "unknown",
+    Source: info.source ?? "unknown"
+  })) {
+    const wrapper = document.createElement("div");
+    wrapper.append(text("dt", key), text("dd", value));
+    details.append(wrapper);
   }
 }
 
@@ -491,7 +596,6 @@ function resetSiteSections() {
   el("domain-summary").textContent = "Select a site above to look up its registry data.";
   clear(el("domain-details"));
   el("rdap-lookup").disabled = true;
-  el("tls-note").textContent = "";
 
   el("risk-summary").textContent = "Select a site above to see its risk score.";
   clear(el("risk-reasons"));
@@ -500,13 +604,60 @@ function resetSiteSections() {
   el("breach-summary").textContent = "Select a site above to check it against breach data.";
   clear(el("breach-list"));
   clear(el("breach-attribution"));
-  renderSelfCheckLinks(null);
 
   el("ads-status").textContent = `Blocking is ${state.overview?.blocking.enabled ? "on" : "off"} for this browser.`;
 }
 
+/** All-sites mode hides the per-site panels; site mode reveals them plus a jump bar. */
+function setSiteMode(isSite) {
+  el("inspect-site").hidden = isSite;
+  el("site-tabs").hidden = !isSite;
+  for (const id of SITE_ONLY_SECTIONS) el(id).hidden = !isSite;
+}
+
+/** Clickable quick-picks for open tabs and recently visited domains. */
+function renderInspectChips() {
+  const chips = el("inspect-chips");
+  clear(chips);
+  const entries = [];
+  const seen = new Set();
+  for (const tab of state.targets?.tabs ?? []) {
+    if (!tab.hostname || seen.has(tab.hostname)) continue;
+    seen.add(tab.hostname);
+    entries.push({ hostname: tab.hostname, open: true });
+  }
+  for (const host of state.targets?.recentHosts ?? []) {
+    if (!host || seen.has(host)) continue;
+    seen.add(host);
+    entries.push({ hostname: host, open: false });
+  }
+  el("inspect-empty").hidden = entries.length > 0;
+  for (const entry of entries.slice(0, 16)) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.textContent = entry.open ? `${entry.hostname} (open)` : entry.hostname;
+    chip.addEventListener("click", () => { void selectTarget(entry.hostname); });
+    chips.append(chip);
+  }
+}
+
+async function selectTarget(hostname) {
+  const select = el("target-select");
+  if (![...select.options].some((option) => option.value === hostname)) {
+    const option = document.createElement("option");
+    option.value = hostname;
+    option.textContent = hostname;
+    select.append(option);
+  }
+  select.value = hostname;
+  state.target = hostname;
+  await applyScope();
+}
+
 /** Applies the site picker to every panel, then re-renders the summary. */
 async function applyScope() {
+  setSiteMode(Boolean(state.target));
   if (state.target) await loadSite(state.target);
   else resetSiteSections();
   renderKpis();
@@ -533,8 +684,10 @@ async function loadHistoryDay(date) {
 async function refresh() {
   try {
     const targets = await send({ type: "webguard.dashboardTargets" });
+    state.targets = targets;
     fillTargetSelect(targets);
     await loadOverview();
+    renderInspectChips();
     await applyScope();
     el("status").textContent = "Loaded.";
     el("status").className = "is-ready";
@@ -627,17 +780,25 @@ el("expand-blocked").addEventListener("click", () => {
 el("frame-select").addEventListener("change", async (event) => {
   state.frame = event.target.value;
   renderKpis();
+  renderCharts();
   await loadBlockedForSite();
 });
 
 el("rdap-lookup").addEventListener("click", async () => {
   if (!state.target) return;
+  // Capture the target before awaiting: a scope change during the lookup used to
+  // reset the section right after a successful answer came back.
+  const targetHost = state.target;
   el("domain-summary").textContent = "Looking this domain up…";
-  const result = await send({ type: "webguard.lookupDomain", hostname: state.target });
-  el("domain-summary").textContent = result.status === "ok"
-    ? `Registry data for ${result.hostname} from ${result.source}.`
-    : result.reason ?? "Domain information is unavailable.";
-  await loadSite(state.target);
+  const result = await send({ type: "webguard.lookupDomain", hostname: targetHost });
+  if (result?.status === "ok") {
+    el("domain-summary").textContent = `Registry data for ${result.hostname} from ${result.source}.`;
+    renderDomainDetails(result, result.hostname ?? targetHost);
+  } else {
+    el("domain-summary").textContent = result?.reason ?? "Domain information is unavailable.";
+    clear(el("domain-details"));
+  }
+  if (state.target === targetHost) await loadSite(targetHost);
 });
 
 el("clear-history").addEventListener("click", async () => {
@@ -652,6 +813,17 @@ el("clear-all").addEventListener("click", async () => {
   el("settings-feedback").textContent = "All WebGuard data cleared.";
   await loadOverview();
   await applyScope();
+});
+
+// Counts, history and settings change while the dashboard is open, so it has to
+// re-read them instead of showing whatever was true when the tab was opened.
+let liveTimer = null;
+const LIVE_KEYS = ["blockingCounts", "settings", "historyEvents", "siteObservations", "dataLastSync", "domainInfoCache"];
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (!LIVE_KEYS.some((key) => key in changes)) return;
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => { void refresh(); }, 250);
 });
 
 void refresh();

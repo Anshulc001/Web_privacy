@@ -17,9 +17,18 @@ import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs"
 import { inspectUrl } from "../lib/url-checks.mjs";
 import { auditPermissions } from "./permission-auditor.mjs";
 import { DEFAULT_SETTINGS } from "../lib/storage-settings.mjs";
+import { DOMAIN_CACHE_KEY, cachedDomainInfo } from "../lib/domain-info.mjs";
 
-const DOMAIN_CACHE_KEY = "domainInfoCache";
 const MAX_RECENT_HOSTS = 25;
+
+/** Keeps only the dates the dashboard can chart, so the payload stays small. */
+function pickDays(map, dates) {
+  const picked = {};
+  for (const date of dates) {
+    if (map && Object.prototype.hasOwnProperty.call(map, date)) picked[date] = map[date];
+  }
+  return picked;
+}
 
 export function createDashboardService({ storageArea, settingsStore, historyStore, observationStore, cookiesApi, tabsApi, blockingManager = null, blockingCounter = null }) {
   async function safeGet(key) {
@@ -31,19 +40,11 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
     }
   }
 
-  async function cachedDomainInfo(hostname) {
-    const cache = await safeGet(DOMAIN_CACHE_KEY);
-    const entry = cache && typeof cache === "object" ? cache[hostname] : null;
-    if (!entry || typeof entry !== "object" || !Number.isFinite(entry.at)) return null;
-    if (Date.now() - entry.at > 86_400_000) return null;
-    return entry.value ?? null;
-  }
-
   return {
     async overview() {
       const settings = await settingsStore.load();
       const events = await historyStore.read();
-      const counts = (await safeGet(BLOCKING_COUNTS_KEY)) ?? { tabs: {}, days: {}, hosts: {} };
+      const counts = (await safeGet(BLOCKING_COUNTS_KEY)) ?? { tabs: {}, tabHosts: {}, days: {}, hosts: {}, sites: {} };
       const blockingData = await safeGet(BLOCKING_DATA_KEY);
       const breachData = await safeGet(BREACH_DATA_KEY);
       const threatData = await safeGet(THREAT_DATA_KEY);
@@ -51,6 +52,7 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
 
       const days = groupHistoryByDay(events, settings.historyRetentionHours);
       const series = blockingSeries(counts);
+      const seriesDates = series.map((day) => day.date);
 
       return {
         settings,
@@ -65,6 +67,16 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
           enabled: settings.blockingEnabled,
           today: series[series.length - 1]?.count ?? 0,
           series,
+          // Per-day source maps are what let the dashboard filter the breakdown by
+          // the frame picker instead of showing all-time host totals.
+          dayHosts: pickDays(counts.dayHosts, seriesDates),
+          sites: Object.entries(counts.sites ?? {})
+            .map(([host, bucket]) => ({
+              host,
+              days: pickDays(bucket?.days, seriesDates),
+              dayHosts: pickDays(bucket?.dayHosts, seriesDates)
+            }))
+            .filter((entry) => Object.keys(entry.days).length > 0 || Object.keys(entry.dayHosts).length > 0),
           topHosts: topBlockedHosts(counts),
           allowlist: settings.siteAllowlist
         },
@@ -140,12 +152,12 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       const audit = auditPermissions(host, observation?.permissionStates, settings.expectedSites);
       const inspected = inspectUrl(pageUrl ?? `https://${host}/`);
       const threat = checkHostForThreats(host, await safeGet(THREAT_DATA_KEY));
-      const domainInfo = await cachedDomainInfo(host);
+      const domainInfo = await cachedDomainInfo(storageArea, host);
       const risk = scoreRisk({ urlFindings: inspected.ok ? inspected.findings : [], threat, domainInfo });
       const breach = checkHostForBreaches(host, await safeGet(BREACH_DATA_KEY));
       const blocking = blockingCounter
         ? await blockingCounter.siteSummary(host)
-        : { days: {}, hosts: [], total: 0 };
+        : { days: {}, dayHosts: {}, hosts: [], total: 0 };
 
       return {
         status: "ok",
@@ -189,7 +201,10 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       if ("historyPaused" in patch) allowed.historyPaused = patch.historyPaused;
       if ("blockingEnabled" in patch) allowed.blockingEnabled = patch.blockingEnabled;
       const settings = await settingsStore.save(allowed);
-      if ("historyRetentionHours" in allowed) await historyStore.prune(settings.historyRetentionHours);
+      if ("historyRetentionHours" in allowed) {
+        await historyStore.prune(settings.historyRetentionHours);
+        if (blockingCounter) await blockingCounter.prune(settings.historyRetentionHours);
+      }
       // Storing the flag is not enough: blocking lives in Chrome's rule engine, so
       // the switch does nothing unless the rules are updated too.
       if ("blockingEnabled" in allowed && blockingManager) {
@@ -205,8 +220,11 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
 
     async clearAllData() {
       await historyStore.clear();
+      // Goes through the counter's queue: writing storage directly left in-flight
+      // record() calls to resurrect the counts seconds later, and forgot `sites`.
+      if (blockingCounter) await blockingCounter.clear();
+      else await storageArea.set({ [BLOCKING_COUNTS_KEY]: { tabs: {}, tabHosts: {}, days: {}, dayHosts: {}, hosts: {}, sites: {}, seen: {} } });
       await storageArea.set({
-        [BLOCKING_COUNTS_KEY]: { tabs: {}, days: {}, hosts: {} },
         [DOMAIN_CACHE_KEY]: {},
         siteObservations: {}
       });

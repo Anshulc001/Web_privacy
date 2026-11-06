@@ -60,10 +60,11 @@ describe("scoreRisk", () => {
     assert.ok(!result.reasons.some((reason) => reason.id === "new-domain"));
   });
 
-  it("notes a missing registrar without inflating the score", () => {
+  it("does not list a zero-weight note for a missing registrar", () => {
     const result = scoreRisk({ domainInfo: { status: "ok", ageDays: 400, registrar: null } });
     assert.strictEqual(result.score, 0);
-    assert.ok(result.reasons.some((reason) => reason.id === "registrar-unknown"));
+    // A reason with no weight explains nothing about the score, so it is not shown.
+    assert.ok(!result.reasons.some((reason) => reason.id === "registrar-unknown"));
   });
 
   it("caps the score at 100", () => {

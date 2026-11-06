@@ -21,17 +21,23 @@
       </header>
 
       <section class="card hero" id="hero" aria-labelledby="blocking-heading">
-        <h2 id="blocking-heading" class="sr-only">Ads and trackers blocked on this site</h2>
+        <h2 id="blocking-heading" class="sr-only">Requests blocked on this site</h2>
         <p class="hero-figure">
-          <span class="sr-only">Ads and trackers blocked on this site:</span>
+          <span class="sr-only">Requests blocked on this site:</span>
           <span id="tab-count">–</span>
         </p>
-        <button id="see-blocked" type="button" class="link-btn" aria-expanded="false" aria-controls="blocked-panel">See blocked ads</button>
+        <p id="block-sub" class="hint hero-sub"></p>
+        <button id="see-blocked" type="button" class="link-btn" aria-expanded="false" aria-controls="blocked-panel">See blocked requests</button>
         <div id="blocked-panel" class="blocked-panel" hidden>
           <ul id="blocked-list"></ul>
           <p id="blocked-source" class="hint"></p>
         </div>
         <button id="allowlist-toggle" type="button" hidden>Allowlist this site</button>
+      </section>
+
+      <section class="card breach-card" id="breach-card" aria-labelledby="breach-heading" hidden>
+        <h2 id="breach-heading" class="sr-only">Data breaches</h2>
+        <button id="breach-chip" type="button" class="breach-chip"></button>
       </section>
 
       <section class="card" aria-labelledby="cookies-heading">
@@ -46,6 +52,7 @@
         <div id="cookies-panel" hidden>
           <p id="cookie-summary" class="meta"></p>
           <ul id="cookies"></ul>
+          <button id="cookie-more" type="button" class="link-btn" hidden>View all in Dashboard</button>
         </div>
       </section>
 
@@ -54,15 +61,8 @@
         <ul id="permissions"></ul>
       </section>
 
-      <section class="card" aria-labelledby="breach-heading" hidden>
-        <h2 id="breach-heading">Data breaches</h2>
-        <p id="breach-summary" class="meta"></p>
-        <ul id="breach-list"></ul>
-      </section>
-
       <footer class="foot">
         <button id="open-dashboard" type="button" class="btn-primary">Open Dashboard</button>
-        <p id="privacy-note" class="hint">Privacy &amp; data: the only network calls are the daily blocklist download and RDAP lookups you start yourself. No analytics, no telemetry, no account.</p>
       </footer>
     </main>
     <script type="module" src="popup.js"></script>
