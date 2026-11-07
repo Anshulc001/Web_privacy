@@ -5,6 +5,18 @@
 // slot that is hidden after the page paints is still an ad slot the user saw
 // flash. The rules themselves live in lib/cosmetic-rules.mjs so the background,
 // this script and the tests share one definition.
+
+// Wake the service worker before the parser dispatches the page's first
+// subresource. Chrome starts an MV3 worker lazily, and a worker that starts on
+// the first blocked request is already too late for the ones in flight: they
+// never reach its webRequest listener, so the page's count begins at zero.
+try {
+  void chrome.runtime.sendMessage({ type: "webguard.ping" })?.catch(() => {});
+} catch {
+  // An extension that was just reloaded has no worker to reach; the filter below
+  // still has to run, so a failed wake-up is never fatal here.
+}
+
 const STYLE_ID = "webguard-cosmetic-filter";
 const SETTINGS_KEY = "settings";
 

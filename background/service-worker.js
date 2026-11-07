@@ -76,6 +76,15 @@ chrome.webRequest.onBeforeRequest.addListener(
   { urls: ["<all_urls>"], types: ["main_frame"] }
 );
 
+// A new tab is the earliest warning that a page is coming: it arrives before the
+// navigation's main-frame request, so the worker that this event starts has its
+// listeners in place by the time the page asks for anything. Without it the
+// worker can be started by the page's own requests, which is already too late for
+// the ones that woke it.
+chrome.tabs.onCreated.addListener(() => {
+  void activeSettings().catch(() => {});
+});
+
 // Fallback for a main-frame change the request listener did not see (a worker
 // waking up late, or a tab moved by something other than a new request). A late
 // update can still carry a non-web URL such as about:blank while a real page is
@@ -252,6 +261,20 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
 }, { urls: ["<all_urls>"] });
 
 chrome.runtime.onMessage.addListener(async (message, sender) => {
+  // The cosmetic filter pings this worker at document_start, and that message is
+  // what makes the first page after a browser restart countable: it starts the
+  // worker while the page is still being parsed, so the webRequest listeners are
+  // registered before the requests they must count are dispatched. The ping also
+  // names the page, and warms the settings the first block will need.
+  if (message?.type === "webguard.ping") {
+    if (sender?.id !== chrome.runtime.id) return undefined;
+    const tabId = sender.tab?.id;
+    if (Number.isInteger(tabId) && tabId >= 0 && !tabSites.has(tabId)) {
+      tabSites.set(tabId, hostnameFromUrl(sender.tab.url));
+    }
+    void activeSettings().catch(() => {});
+    return { ok: true };
+  }
   const observation = validateSiteObservation(message, sender, chrome.runtime.id);
   if (observation) {
     await observationStore.save(observation);
