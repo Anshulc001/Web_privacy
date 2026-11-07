@@ -5,7 +5,12 @@ import { candidateHosts, normalizeHost } from "../lib/host-match.mjs";
 
 const SOURCE_URL = "https://easylist-downloads.adblockplus.org/easyprivacy+easylist.txt";
 const MAX_SOURCE_BYTES = 20_000_000;
-const MAX_RULES = 25_000;
+// Chrome guarantees 30,000 static rules per extension. The host rules are the
+// bulk of that; path rules get the remainder, so the total can never outgrow the
+// budget and leave the ruleset rejected.
+const MAX_HOST_RULES = 25_000;
+const MAX_PATH_RULES = 4_500;
+const MAX_STATIC_RULES = 30_000;
 const RESOURCE_TYPES = ["main_frame", "sub_frame", "script", "image", "xmlhttprequest", "media", "font", "stylesheet", "ping", "other"];
 const outputDirectory = resolve(import.meta.dirname, "../data");
 
@@ -16,6 +21,33 @@ const HOST_RULE_PATTERNS = [
   /^\|\|([a-z0-9.-]+)\^$/i,
   /^\.([a-z0-9.-]+)\/?$/i
 ];
+
+// A path rule blocks one path on a site that must otherwise keep working
+// (`||example.com/ads/`), which a host rule cannot express: it would take the
+// whole site down. Only rules with no options are kept, because dropping an
+// option such as third-party would widen the block far past what the list asked
+// for.
+const PATH_RULE_PATTERNS = [
+  /^\|\|([a-z0-9.-]+)(\/[^|$]*)$/i,
+  /^\.([a-z0-9.-]+)(\/[^|$]*)$/i
+];
+
+// Paths that name what they block, used to spend the small path-rule budget on
+// the rules most likely to matter.
+const AD_PATH_TOKENS = /(?:^|[/._-])(?:ad|ads|adv|advert|advertisement|banners?|sponsors?|sponsored|promo|pixel|beacon|impressions?|track|tracking|analytics|pagead|doubleclick|collect|gtag|pageview|conversion)(?:[/._-]|$)/i;
+
+function normalizedKey(pattern) {
+  const host = HOST_RULE_PATTERNS[0].exec(pattern)?.[1] ?? HOST_RULE_PATTERNS[1].exec(pattern)?.[1];
+  if (host) return normalizeHost(host);
+  for (const matcher of PATH_RULE_PATTERNS) {
+    const match = matcher.exec(pattern);
+    if (!match) continue;
+    const pathHost = normalizeHost(match[1]);
+    const path = match[2].replace(/\^+$/, "");
+    return pathHost && path.length > 1 ? `${pathHost}${path}` : null;
+  }
+  return null;
+}
 
 // Blocking loopback would break every local dev server and localhost tool, so
 // these are always excluded no matter what the upstream lists contain.
@@ -41,6 +73,8 @@ const lines = text.split(/\r?\n/);
 if (lines.length < 1_000) throw new Error("Source list is unexpectedly small; refusing to build.");
 
 const hosts = new Set();
+const pathRules = new Set();
+const exceptionKeys = new Set();
 const domainMentions = new Map();
 
 for (const rawLine of lines) {
@@ -48,13 +82,35 @@ for (const rawLine of lines) {
   if (!line || line.startsWith("!") || line.startsWith("[") || line.startsWith("#")) continue;
 
   // Options come after "$"; only the pattern part decides whether this is a host rule.
+  const hasOptions = line.includes("$");
   const patternPart = line.split("$")[0];
+
+  // An exception withdraws one pattern; a block rule that repeats it must not be
+  // published, or the lists' own unblock is silently overridden.
+  if (patternPart.startsWith("@@")) {
+    const key = normalizedKey(patternPart.slice(2));
+    if (key) exceptionKeys.add(key);
+    continue;
+  }
+
+  let matchedHostRule = false;
   for (const pattern of HOST_RULE_PATTERNS) {
     const match = pattern.exec(patternPart);
     if (!match) continue;
     const host = normalizeHost(match[1]);
     if (host && !isLoopback(host)) hosts.add(host);
+    matchedHostRule = true;
     break;
+  }
+
+  if (!matchedHostRule && !hasOptions) {
+    for (const pattern of PATH_RULE_PATTERNS) {
+      const match = pattern.exec(patternPart);
+      if (!match) continue;
+      const host = normalizeHost(match[1]);
+      if (host && !isLoopback(host)) pathRules.add(`${host}${match[2].replace(/\^+$/, "")}`);
+      break;
+    }
   }
 
   // Score how often each registrable domain is referenced anywhere in the list.
@@ -67,6 +123,11 @@ for (const rawLine of lines) {
 
 if (hosts.size === 0) throw new Error("No host-level rules were found.");
 
+for (const key of exceptionKeys) {
+  hosts.delete(key);
+  pathRules.delete(key);
+}
+
 function scoreHost(host) {
   const domain = registrableDomain(host);
   const mentions = domain ? domainMentions.get(domain) ?? 0 : 0;
@@ -77,18 +138,40 @@ function scoreHost(host) {
 const selected = [...hosts]
   .map(scoreHost)
   .sort((a, b) => b.mentions - a.mentions || a.labels - b.labels || a.length - b.length || a.host.localeCompare(b.host))
-  .slice(0, MAX_RULES)
+  .slice(0, MAX_HOST_RULES)
   .map((entry) => entry.host)
   .sort();
 
 if (selected.length === 0) throw new Error("No rules survived selection.");
 
-const rules = selected.map((host, index) => ({
+const pathBudget = Math.min(MAX_PATH_RULES, MAX_STATIC_RULES - selected.length);
+const selectedPaths = [...pathRules]
+  .map((key) => {
+    const slash = key.indexOf("/");
+    const host = key.slice(0, slash);
+    const path = key.slice(slash);
+    const mentions = domainMentions.get(registrableDomain(host)) ?? 0;
+    return { key, mentions, adPath: AD_PATH_TOKENS.test(path) ? 1 : 0, pathLength: path.length, host, path };
+  })
+  // A path that does not name an ad or a tracker is not worth the risk of
+  // blocking a real page: `/report/` and `/log/` are as likely to be the site's
+  // own content as a beacon.
+  .filter((entry) => entry.adPath === 1)
+  .sort((a, b) => b.mentions - a.mentions || a.pathLength - b.pathLength || a.key.localeCompare(b.key))
+  .slice(0, pathBudget)
+  .sort((a, b) => a.key.localeCompare(b.key));
+
+const rules = [
+  ...selected.map((host) => `||${host}^`),
+  ...selectedPaths.map((entry) => `||${entry.key}`)
+].map((urlFilter, index) => ({
   id: index + 1,
   priority: 1,
   action: { type: "block" },
-  condition: { urlFilter: `||${host}^`, resourceTypes: RESOURCE_TYPES }
+  condition: { urlFilter, resourceTypes: RESOURCE_TYPES }
 }));
+
+if (rules.length > MAX_STATIC_RULES) throw new Error("Rule count exceeds the static ruleset budget.");
 
 const metadata = {
   version: "1.0.0",
@@ -96,11 +179,21 @@ const metadata = {
   checksum: await sha256(JSON.stringify(selected)),
   source: "EasyList+EasyPrivacy",
   attribution: "Ad and tracker blocking rules derived from EasyList and EasyPrivacy, © The EasyList Authors (https://easylist.to/), licensed under CC BY-SA 3.0 / GPL v3.",
-  stats: { extractedHosts: hosts.size, publishedRules: selected.length },
+  stats: {
+    extractedHosts: hosts.size,
+    extractedPathRules: pathRules.size,
+    withdrawnByException: exceptionKeys.size,
+    publishedHostRules: selected.length,
+    publishedPathRules: selectedPaths.length,
+    publishedRules: rules.length
+  },
   data: { hosts: selected }
 };
 
 await mkdir(outputDirectory, { recursive: true });
 await writeFile(resolve(outputDirectory, "ad-tracker-rules.json"), `${JSON.stringify(rules)}\n`);
 await writeFile(resolve(outputDirectory, "ad-tracker-data.json"), `${JSON.stringify(metadata)}\n`);
-console.log(`Extracted ${hosts.size} host-level hosts; published ${selected.length} highest-impact rules.`);
+console.log(
+  `Extracted ${hosts.size} hosts and ${pathRules.size} path rules; ` +
+    `published ${selected.length} host rules and ${selectedPaths.length} path rules.`
+);

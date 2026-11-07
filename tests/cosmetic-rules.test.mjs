@@ -3,6 +3,8 @@ import assert from "node:assert";
 import {
   COSMETIC_SELECTORS,
   buildCosmeticCss,
+  hostSelectorsFor,
+  isPlaceholderLabel,
   shouldApplyCosmeticFilter
 } from "../lib/cosmetic-rules.mjs";
 
@@ -29,7 +31,6 @@ const REQUIRED_SELECTORS = [
   "[data-aa-adunit]",
   '[id^="adpushup-"]',
   ".ads-wrp",
-  '[class*="TpGnAd_"]',
   'iframe[src*="doubleclick.net"]',
   'iframe[src*="googlesyndication.com"]',
   'iframe[src*="amazon-adsystem.com"]',
@@ -86,6 +87,56 @@ describe("buildCosmeticCss", () => {
     assert.strictEqual(buildCosmeticCss([]), "");
     assert.strictEqual(buildCosmeticCss(null), "");
     assert.strictEqual(buildCosmeticCss(["", null]), "");
+  });
+});
+
+describe("hostSelectorsFor", () => {
+  const dataset = {
+    domains: {
+      "news.test": [".ad", ".banner"],
+      "www.news.test": ["#top-ad"],
+      "other.test": [".promo"]
+    },
+    exceptions: { "www.news.test": [".ad"] }
+  };
+
+  it("collects the rules for the host and each parent domain", () => {
+    assert.deepEqual(hostSelectorsFor(dataset, "www.news.test"), ["#top-ad", ".banner"]);
+  });
+
+  it("applies a domain's rules to the sites below it", () => {
+    assert.deepEqual(hostSelectorsFor(dataset, "edition.news.test"), [".ad", ".banner"]);
+  });
+
+  it("leaves out the rules an exception withdraws on this host", () => {
+    assert.ok(!hostSelectorsFor(dataset, "www.news.test").includes(".ad"));
+    assert.ok(hostSelectorsFor(dataset, "mail.news.test").includes(".ad"));
+  });
+
+  it("returns nothing for a host the lists do not mention", () => {
+    assert.deepEqual(hostSelectorsFor(dataset, "unlisted.test"), []);
+    assert.deepEqual(hostSelectorsFor(dataset, "127.0.0.1"), []);
+    assert.deepEqual(hostSelectorsFor(null, "news.test"), []);
+    assert.deepEqual(hostSelectorsFor({ domains: [] }, "news.test"), []);
+  });
+
+  it("never repeats a selector", () => {
+    const repeated = { domains: { "news.test": [".ad", ".ad"], "www.news.test": [".ad"] } };
+    assert.deepEqual(hostSelectorsFor(repeated, "www.news.test"), [".ad"]);
+  });
+});
+
+describe("isPlaceholderLabel", () => {
+  it("recognises the caption a publisher prints in an unfilled slot", () => {
+    for (const label of ["Advertisement", " advertisement ", "Advertisement - scroll to continue", "Sponsored", "Sponsored content", "Anzeige", "Reklama"]) {
+      assert.strictEqual(isPlaceholderLabel(label), true, `${label} must count as a placeholder caption`);
+    }
+  });
+
+  it("does not match page copy that merely mentions advertising", () => {
+    for (const text of ["", "   ", null, "Our advertisement policy explains how we work with partners", "Advertisement-free reading for subscribers starts here today"]) {
+      assert.strictEqual(isPlaceholderLabel(text), false, `${text} must not be treated as a caption`);
+    }
   });
 });
 

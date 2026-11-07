@@ -3,6 +3,7 @@ import { createBlockingManager } from "./blocking-manager.mjs";
 import { createBlockingCounter, isBlockedByClient, shouldCountBlockedRequest } from "./blocking-counter.mjs";
 import { BLOCKING_DATA_KEY, createDataSync } from "./data-sync.mjs";
 import { BREACH_DATA_KEY, checkHostForBreaches } from "../lib/breach-checker.mjs";
+import { hostSelectorsFor } from "../lib/cosmetic-rules.mjs";
 import { inspectSiteCookies } from "../lib/cookie-inspector.mjs";
 import { createDashboardService } from "./dashboard-service.mjs";
 import {
@@ -261,6 +262,35 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
   })().catch((error) => console.error("WebGuard could not count a blocked request.", error));
 }, { urls: ["<all_urls>"] });
 
+/**
+ * The compiled element-hiding rules are a few hundred kilobytes of JSON, so the
+ * worker reads them once and answers each page with just its own selectors. A
+ * page that fetched the whole map would pay for every other site's rules.
+ */
+let cosmeticDataset = null;
+let cosmeticDatasetLoading = null;
+let cosmeticDatasetFailed = false;
+
+async function cosmeticRulesFor(url) {
+  const hostname = hostnameFromUrl(url);
+  if (!hostname) return { hostname: null, selectors: [] };
+  if (!cosmeticDataset && !cosmeticDatasetLoading && !cosmeticDatasetFailed) {
+    cosmeticDatasetLoading = fetch(chrome.runtime.getURL("data/cosmetic-rules.json"))
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null)
+      .then((data) => {
+        cosmeticDataset = data;
+        cosmeticDatasetLoading = null;
+        // A missing or broken data file will not repair itself within this
+        // worker's lifetime; retrying it on every page would only cost time.
+        cosmeticDatasetFailed = data === null;
+        return data;
+      });
+  }
+  if (cosmeticDatasetLoading) await cosmeticDatasetLoading;
+  return { hostname, selectors: hostSelectorsFor(cosmeticDataset, hostname) };
+}
+
 chrome.runtime.onMessage.addListener(async (message, sender) => {
   // The cosmetic filter pings this worker at document_start, and that message is
   // what makes the first page after a browser restart countable: it starts the
@@ -275,6 +305,10 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
     }
     void activeSettings().catch(() => {});
     return { ok: true };
+  }
+  if (message?.type === "webguard.cosmeticRules") {
+    if (sender?.id !== chrome.runtime.id) return undefined;
+    return cosmeticRulesFor(sender.url ?? sender.tab?.url);
   }
   const observation = validateSiteObservation(message, sender, chrome.runtime.id);
   if (observation) {

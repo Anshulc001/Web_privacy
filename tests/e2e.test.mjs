@@ -99,6 +99,7 @@ describe("WebGuard end to end", () => {
         <h1>Test site</h1>
         <div id="div-gpt-ad-banner">Ad</div>
         <ins class="adsbygoogle">Ad</ins>
+        <div id="ad-label-slot"><span class="ad-caption">Advertisement</span></div>
         <script src="/control.js"></script>
         ${TRACKERS.map((url) => `<script src="${url}"></script>`).join("\n")}
       </body></html>`);
@@ -755,6 +756,8 @@ describe("WebGuard end to end", () => {
           css: style?.textContent ?? "",
           banner: getComputedStyle(document.querySelector("#div-gpt-ad-banner")).display,
           inline: getComputedStyle(document.querySelector("ins.adsbygoogle")).display,
+          slot: getComputedStyle(document.querySelector("#ad-label-slot")).display,
+          captionMarked: Boolean(document.querySelector("[data-webguard-placeholder]")),
           heading: getComputedStyle(document.querySelector("h1")).display
         };
       });
@@ -765,12 +768,27 @@ describe("WebGuard end to end", () => {
       null,
       { timeout: 15_000 }
     );
+    // The generic half of the compiled lists arrives as its own stylesheet, and
+    // it is far larger than the built-in selector list.
+    await sitePage.waitForFunction(
+      () => (document.getElementById("webguard-cosmetic-filter")?.textContent?.length ?? 0) > 10_000,
+      null,
+      { timeout: 15_000 }
+    );
+    // The label pass runs once the document is parsed.
+    await sitePage.waitForFunction(
+      () => document.querySelector("[data-webguard-placeholder]") !== null,
+      null,
+      { timeout: 15_000 }
+    );
     const hidden = await readAds();
     assert.strictEqual(hidden.banner, "none", "the ad slot must be hidden");
     assert.strictEqual(hidden.inline, "none", "the AdSense placeholder must be hidden");
     assert.notStrictEqual(hidden.heading, "none", "real page content must stay visible");
     assert.ok(hidden.css.includes("display: none !important"), "the injected stylesheet must hide matched slots");
     assert.strictEqual(hidden.parent, "HEAD", "the injected style element belongs in head");
+    assert.strictEqual(hidden.captionMarked, true, "an unfilled slot is found by its caption, not by a site-specific class");
+    assert.strictEqual(hidden.slot, "none", "the empty box around the caption must collapse with it");
 
     const page = await context.newPage();
     await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -797,6 +815,8 @@ describe("WebGuard end to end", () => {
     const allowed = await readAds();
     assert.strictEqual(allowed.injected, false, "the stylesheet must be removed when the site is allowlisted");
     assert.notStrictEqual(allowed.inline, "none", "the AdSense placeholder must show again");
+    assert.strictEqual(allowed.captionMarked, false, "the label pass must give the element back, not only hide it");
+    assert.notStrictEqual(allowed.slot, "none", "the caption's box must show again on an allowlisted site");
 
     // Removing the site from the allowlist brings the filter back, no reload.
     await page.click("#allowlist-toggle");

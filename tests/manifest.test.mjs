@@ -37,7 +37,12 @@ test("exposes only the cosmetic filter rules to the page's content script", () =
   // The content script imports these modules, so Chrome only hands them over if
   // they are declared; nothing else may become reachable from a page.
   assert.deepEqual(manifest.web_accessible_resources, [{
-    resources: ["lib/cosmetic-rules.mjs", "lib/host-match.mjs"],
+    resources: [
+      "lib/cosmetic-rules.mjs",
+      "lib/host-match.mjs",
+      "data/cosmetic-generic.css",
+      "data/cosmetic-rules.json"
+    ],
     matches: ["<all_urls>"]
   }]);
 });
@@ -47,6 +52,12 @@ test("declares a valid bundled static DNR ruleset", async () => {
     id: "ad_tracker_rules", enabled: true, path: "data/ad-tracker-rules.json"
   }]);
   const rules = JSON.parse(await readFile(new URL("../data/ad-tracker-rules.json", import.meta.url), "utf8"));
-  assert.equal(rules.length, 25_000);
+  // Chrome guarantees 30,000 static rules per extension; a ruleset over that can
+  // be rejected outright, which would leave the extension with no blocking at all.
+  assert.ok(rules.length > 0 && rules.length <= 30_000, `unexpected rule count ${rules.length}`);
   assert.deepEqual(rules[0].action, { type: "block" });
+  const filters = rules.map((rule) => rule.condition.urlFilter);
+  assert.ok(filters.some((filter) => /^\|\|[^/]+\^$/.test(filter)), "host-anchored rules must be present");
+  assert.ok(filters.some((filter) => /^\|\|[^/]+\//.test(filter)), "path-anchored rules must be present");
+  assert.deepEqual(filters, [...new Set(filters)], "a repeated filter wastes a rule slot");
 });

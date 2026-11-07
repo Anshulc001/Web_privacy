@@ -29,7 +29,12 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["lib/cosmetic-rules.mjs", "lib/host-match.mjs"],
+      "resources": [
+        "lib/cosmetic-rules.mjs",
+        "lib/host-match.mjs",
+        "data/cosmetic-generic.css",
+        "data/cosmetic-rules.json"
+      ],
       "matches": ["<all_urls>"]
     }
   ],

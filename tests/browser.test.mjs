@@ -17,19 +17,30 @@ function readJson(relPath) {
 }
 
 describe('WebGuard browser + extension checks', () => {
-  it('bundled ad/tracker rules file is valid and contains 25000 rules', () => {
+  it('bundled ad/tracker rules are valid and stay inside the static ruleset budget', () => {
     const rules = readJson('data/ad-tracker-rules.json');
     assert(Array.isArray(rules), 'rules should be an array');
-    assert.strictEqual(rules.length, 25000, 'should bundle 25000 host-level rules');
+    // Chrome guarantees 30,000 static rules; a larger ruleset can be rejected and
+    // leave the extension blocking nothing at all.
+    assert.ok(rules.length > 20_000, `expected a full ruleset, got ${rules.length}`);
+    assert.ok(rules.length <= 30_000, `ruleset is over the 30,000 budget: ${rules.length}`);
 
+    let hostRules = 0;
+    let pathRules = 0;
     for (const rule of rules) {
       assert(typeof rule.id === 'number', 'rule.id must be a number');
       assert.strictEqual(rule.priority, 1, 'rule.priority must be 1');
       assert.strictEqual(rule.action?.type, 'block', 'rule.action.type must be block');
       assert(Array.isArray(rule.condition?.resourceTypes), 'condition.resourceTypes must be an array');
-      assert.ok(rule.condition?.urlFilter?.startsWith('||'), 'urlFilter must start with ||');
-      assert.ok(rule.condition?.urlFilter?.endsWith('^'), 'urlFilter must end with ^');
+      const filter = rule.condition?.urlFilter ?? '';
+      assert.ok(filter.startsWith('||'), 'urlFilter must be host-anchored');
+      assert.ok(/^\|\|[a-z0-9.-]+(?:\^|\/)/i.test(filter), `unexpected urlFilter ${filter}`);
+      if (filter.endsWith('^')) hostRules += 1;
+      else pathRules += 1;
     }
+    assert.ok(hostRules > 0, 'a host-anchored rule blocks the whole domain');
+    assert.ok(pathRules > 0, 'a path-anchored rule blocks one path on an otherwise working site');
+    assert.strictEqual(new Set(rules.map((rule) => rule.condition.urlFilter)).size, rules.length, 'a repeated filter wastes a rule slot');
   });
 
   it('manifest references the ad_tracker_rules ruleset and declares the CSP/permissions', () => {

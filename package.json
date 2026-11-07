@@ -6,9 +6,10 @@
   "scripts": {
     "test": "node --test",
     "build:ads": "node tools/build-ad-rules.mjs",
+    "build:cosmetic": "node tools/build-cosmetic-rules.mjs",
     "build:breach": "node tools/build-breach-data.mjs",
     "build:threat": "node tools/build-threat-list.mjs",
-    "build:data": "npm run build:ads && npm run build:breach && npm run build:threat",
+    "build:data": "npm run build:ads && npm run build:cosmetic && npm run build:breach && npm run build:threat",
     "package": "node tools/package-extension.mjs",
     "mcp:check": "node tools/mcp-check.mjs"
   },
