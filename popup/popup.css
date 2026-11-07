@@ -10,6 +10,7 @@
   --muted: #5a6472;
   --accent: #1a5fd0;
   --accent-soft: #e9f0fd;
+  --danger: #b3261e;
 
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
@@ -26,6 +27,7 @@
     --muted: #a3aec0;
     --accent: #6aa9ff;
     --accent-soft: #172740;
+    --danger: #ff8a80;
   }
 }
 
@@ -213,6 +215,9 @@ button.btn-primary:hover { filter: brightness(1.06); color: #ffffff; background:
   text-decoration: underline;
 }
 
+.link-danger { color: var(--danger); }
+.link-danger:hover { color: var(--danger); }
+
 /* expandable list of blocked hosts, Brave-style rows with a count badge */
 
 .blocked-panel {
@@ -247,10 +252,38 @@ li.blocked-row {
 }
 
 .blocked-host {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* What kind of tracker a source is; the host and count stay plain text. */
+.tracker-badge {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.tracker-badge--ads { border-color: #f0b8b8; background: #fdeaea; color: #9b2c2c; }
+.tracker-badge--analytics { border-color: #b9cdf0; background: #eaf1fd; color: #1d4ed8; }
+.tracker-badge--replay { border-color: #d8bdf0; background: #f4ebfd; color: #6b21a8; }
+.tracker-badge--social { border-color: #a9dccd; background: #e8f7f1; color: #0f6b52; }
+.tracker-badge--tracker { border-color: var(--border-strong); background: var(--surface-2); color: var(--muted); }
+
+@media (prefers-color-scheme: dark) {
+  .tracker-badge--ads { border-color: #5c2b2b; background: #2a1717; color: #ffb4ab; }
+  .tracker-badge--analytics { border-color: #24406b; background: #14233a; color: #9dc4ff; }
+  .tracker-badge--replay { border-color: #452a63; background: #241a33; color: #d8b4fe; }
+  .tracker-badge--social { border-color: #1f4d3f; background: #132a24; color: #7fe0c0; }
 }
 
 .blocked-count {
@@ -309,6 +342,12 @@ li.blocked-row {
 #cookies-panel { margin-top: 2px; }
 
 #cookie-summary:empty { display: none; }
+
+#clear-cookies { margin-top: 2px; }
+#clear-cookies[hidden] { display: none; }
+
+#cookie-feedback { margin-top: 4px; color: var(--accent); }
+#cookie-feedback[hidden] { display: none; }
 
 #allowlist-toggle { margin-top: 8px; }
 

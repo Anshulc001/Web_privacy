@@ -538,7 +538,46 @@ button.btn-danger:hover { border-color: var(--danger); background: color-mix(in 
   gap: var(--s2);
 }
 
-.blocked-host { overflow-wrap: anywhere; }
+.blocked-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* What kind of tracker a source is; the host and count stay plain text. */
+.tracker-badge {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tracker-badge--ads { border-color: #f0b8b8; background: #fdeaea; color: #9b2c2c; }
+.tracker-badge--analytics { border-color: #b9cdf0; background: #eaf1fd; color: #1d4ed8; }
+.tracker-badge--replay { border-color: #d8bdf0; background: #f4ebfd; color: #6b21a8; }
+.tracker-badge--social { border-color: #a9dccd; background: #e8f7f1; color: #0f6b52; }
+.tracker-badge--tracker { border-color: var(--border-strong); background: var(--surface-2); color: var(--muted); }
+
+@media (prefers-color-scheme: dark) {
+  .tracker-badge--ads { border-color: #5c2b2b; background: #2a1717; color: #ffb4ab; }
+  .tracker-badge--analytics { border-color: #24406b; background: #14233a; color: #9dc4ff; }
+  .tracker-badge--replay { border-color: #452a63; background: #241a33; color: #d8b4fe; }
+  .tracker-badge--social { border-color: #1f4d3f; background: #132a24; color: #7fe0c0; }
+}
+
+#clear-site-cookies {
+  margin: var(--s2) 0;
+}
+
+#clear-site-cookies:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 
 .blocked-count {
   flex: none;

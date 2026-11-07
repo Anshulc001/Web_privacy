@@ -2,6 +2,7 @@ import { BLOCKING_COUNTS_KEY } from "./blocking-counter.mjs";
 import { BLOCKING_DATA_KEY, LAST_SYNC_KEY } from "./data-sync.mjs";
 import { normalizeHostname, hostnameFromUrl } from "./history-store.mjs";
 import { BREACH_DATA_KEY, checkHostForBreaches } from "../lib/breach-checker.mjs";
+import { clearCookiesForHost } from "../lib/cookie-insights.mjs";
 import { inspectSiteCookies } from "../lib/cookie-inspector.mjs";
 import {
   blockingSeries,
@@ -173,6 +174,21 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         domainInfo,
         allowlisted: settings.siteAllowlist.includes(host)
       };
+    },
+
+    /**
+     * Deletes the cookies the site can see. Cookie values are never read, so the
+     * answer is a count, not a list of what was there.
+     */
+    async clearSiteCookies(hostname) {
+      const host = normalizeHostname(hostname);
+      if (!host) return { ok: false, removed: 0, reason: "A hostname is required." };
+      try {
+        const { removed } = await clearCookiesForHost(cookiesApi, host);
+        return { ok: true, removed };
+      } catch (error) {
+        return { ok: false, removed: 0, reason: String(error?.message ?? error) };
+      }
     },
 
     async historyFor(date) {

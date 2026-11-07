@@ -1,9 +1,12 @@
 import { barChartModel, CHART_HEIGHT, CHART_WIDTH, horizontalBarModel } from "./charts.mjs";
 import { formatCount } from "../lib/format.mjs";
 import { isPublicDomain } from "../lib/domain-info.mjs";
+import { categorizeTrackerHost } from "../lib/tracker-categories.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const state = { target: null, targets: null, overview: null, site: null, frame: "today" };
+// True while a click on the blocking switch is still being saved.
+let blockingToggleBusy = false;
 // These panels describe one site; in "All sites" mode they are hidden rather
 // than left on the page as boxes saying "select a site".
 const SITE_ONLY_SECTIONS = ["cookies", "permissions", "domain", "suspicious", "breach"];
@@ -111,13 +114,22 @@ function rankedSourceItems(dayHosts, total) {
   return items;
 }
 
-/** A blocked host row: the host on the left, its count in a badge on the right. */
-function blockedRow(host, count) {
+/**
+ * A blocked host row: the host on the left, its category, and its count on the
+ * right. The "Other / unattributed" remainder is not a tracker, so it gets no
+ * category label.
+ */
+function blockedRow(host, count, { unattributed = false } = {}) {
   const item = document.createElement("li");
   item.className = "blocked-row";
   const badge = text("span", formatCount(count), "blocked-count");
   badge.title = `${count} blocked request(s)`;
-  item.append(text("span", host, "blocked-host"), badge);
+  const cells = [text("span", host, "blocked-host")];
+  if (!unattributed) {
+    const category = categorizeTrackerHost(host);
+    cells.push(text("span", category.label, `tracker-badge tracker-badge--${category.id}`));
+  }
+  item.append(...cells, badge);
   return item;
 }
 
@@ -353,7 +365,10 @@ async function loadOverview() {
     for (const host of overview.blocking.allowlist) allowlistList.append(listItem(host));
   }
 
-  el("blocking-toggle").checked = overview.blocking.enabled;
+  // A live refresh is debounced by a quarter second, so one that read the settings
+  // just before a click on the switch can land just after it and flip the switch
+  // back. While the change is being saved, the switch belongs to the user.
+  if (!blockingToggleBusy) el("blocking-toggle").checked = overview.blocking.enabled;
   el("history-paused").checked = overview.history.paused;
   el("history-retention").textContent = `Only the last ${dayLabel(overview.history.retentionHours)} of hostnames are kept, and older entries are pruned automatically.`;
   el("settings-retention-note").textContent = `Retention is ${dayLabel(overview.history.retentionHours)}. Data older than that is deleted automatically.`;
@@ -433,7 +448,7 @@ async function loadBlockedForSite() {
       list.textContent = "No blocked requests recorded for this site in this time frame.";
     } else {
       // Every source, not a top ten: the rows add up to the number above.
-      for (const row of rows) list.append(blockedRow(row.host, row.count));
+      for (const row of rows) list.append(blockedRow(row.host, row.count, { unattributed: row.unattributed === true }));
     }
     sourceEl.textContent = "Every source blocked on this site in the selected time frame, most frequent first; the counts add up to the number above. Page URLs are never stored.";
     return;
@@ -455,7 +470,7 @@ async function loadBlockedForSite() {
   list.append(blockedGroup("By website"));
   for (const entry of websites) list.append(websiteRow(entry));
   list.append(blockedGroup("By tracker source"));
-  for (const row of rows) list.append(blockedRow(row.host, row.count));
+  for (const row of rows) list.append(blockedRow(row.host, row.count, { unattributed: row.unattributed === true }));
   sourceEl.textContent = "By website and by tracker source, for the selected time frame; both lists add up to the number above. Not a full request log, and page URLs are never stored.";
 }
 
@@ -478,6 +493,8 @@ async function loadSite(hostname) {
   const cookiesList = el("cookies-list");
   clear(cookiesList);
   const cookies = report.cookies;
+  const cookieCount = cookies?.status === "ok" ? (cookies.cookies ?? []).length : 0;
+  el("clear-site-cookies").disabled = cookieCount === 0;
   if (!cookies || cookies.status === "unavailable") {
     el("cookies-status").textContent = "Cookie details are unavailable on this page.";
     cookiesList.textContent = "";
@@ -634,6 +651,7 @@ function resetSiteSections() {
 
   el("cookies-status").textContent = "Select a site above to see its cookies.";
   clear(el("cookies-list"));
+  el("clear-site-cookies").disabled = true;
 
   const permissionsList = el("permissions-list");
   clear(permissionsList);
@@ -799,9 +817,14 @@ el("history-date").addEventListener("change", async (event) => {
 });
 
 el("blocking-toggle").addEventListener("change", async (event) => {
-  await send({ type: "webguard.updateSettings", patch: { blockingEnabled: event.target.checked } });
-  await loadOverview();
-  await applyScope();
+  blockingToggleBusy = true;
+  try {
+    await send({ type: "webguard.updateSettings", patch: { blockingEnabled: event.target.checked } });
+    await loadOverview();
+    await applyScope();
+  } finally {
+    blockingToggleBusy = false;
+  }
 });
 
 el("history-paused").addEventListener("change", async (event) => {
@@ -848,6 +871,18 @@ el("frame-select").addEventListener("change", async (event) => {
 el("rdap-lookup").addEventListener("click", () => {
   if (!state.target) return;
   void lookupSelectedDomain(state.target);
+});
+
+el("clear-site-cookies").addEventListener("click", async () => {
+  if (!state.target) return;
+  el("clear-site-cookies").disabled = true;
+  const result = await send({ type: "webguard.clearSiteCookies", hostname: state.target });
+  // Re-read the site so the cookie list, the count and the button all agree with
+  // the browser; the confirmation is then written over the refreshed status.
+  await loadSite(state.target);
+  el("cookies-status").textContent = result?.ok
+    ? `Cleared ${result.removed} cookie${result.removed === 1 ? "" : "s"} for this site.`
+    : (result?.reason ?? "Cookies could not be cleared.");
 });
 
 el("clear-history").addEventListener("click", async () => {

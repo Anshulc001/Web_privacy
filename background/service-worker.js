@@ -16,6 +16,7 @@ import {
 import { formatBadgeCount } from "../lib/format.mjs";
 import { scoreRisk } from "../lib/risk-score.mjs";
 import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs";
+import { TRACKING_PARAM_RULE_ID } from "../lib/tracking-params.mjs";
 import { inspectUrl } from "../lib/url-checks.mjs";
 import { createHistoryStore, createNavigationRecorder, hostnameFromUrl } from "./history-store.mjs";
 import { createObservationStore, validateSiteObservation } from "./messages.mjs";
@@ -302,6 +303,7 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
   if (message.type === "webguard.siteReport") return dashboardService.siteReport({ hostname: message.hostname, tabId: message.tabId });
   if (message.type === "webguard.historyFor") return dashboardService.historyFor(message.date);
   if (message.type === "webguard.updateSettings") return dashboardService.updateSettings(message.patch);
+  if (message.type === "webguard.clearSiteCookies") return dashboardService.clearSiteCookies(message.hostname);
   if (message.type === "webguard.clearHistory") return dashboardService.clearHistory();
   if (message.type === "webguard.clearAllData") return dashboardService.clearAllData();
   return undefined;
@@ -323,8 +325,27 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // blocked counts are lost. The startup hook starts the worker while the browser
 // is still opening, and warms the settings cache the first requests will need.
 chrome.runtime.onStartup.addListener(() => {
-  void activeSettings().catch((error) => console.error("WebGuard could not load settings on startup.", error));
+  void ensureTrackingParamRule().catch((error) => console.error("WebGuard could not load settings on startup.", error));
 });
+
+// A fresh profile has never switched the blocking toggle or edited the allowlist,
+// so nothing has installed the tracking-parameter redirect yet and it would never
+// run for a user who leaves the defaults alone. Installing it on worker start makes
+// the default state the working state.
+//
+// The rule is only rewritten when it disagrees with the settings: a worker wakes
+// for every page, and rewriting identical dynamic rules on each wake would fight
+// with a toggle the user is clicking at that very moment.
+async function ensureTrackingParamRule() {
+  const settings = await activeSettings();
+  const rules = await chrome.declarativeNetRequest.getDynamicRules();
+  const installed = rules.some((rule) => rule.id === TRACKING_PARAM_RULE_ID);
+  if (installed !== settings.blockingEnabled) {
+    await blockingManager.syncTrackingParamRule(settings.blockingEnabled, settings.siteAllowlist);
+  }
+}
+
+void ensureTrackingParamRule().catch((error) => console.error("WebGuard could not install the tracking-parameter rule.", error));
 
 void chrome.alarms.create(DATA_SYNC_ALARM, { periodInMinutes: 1_440, persistAcrossSessions: true }).catch((error) => {
   console.error("WebGuard could not schedule data sync.", error);

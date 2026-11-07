@@ -1,4 +1,5 @@
 import { formatCount } from "../lib/format.mjs";
+import { categorizeTrackerHost } from "../lib/tracker-categories.mjs";
 
 const status = document.getElementById("status");
 const cookieTotal = document.getElementById("cookie-total");
@@ -9,6 +10,8 @@ const cookiesPanel = document.getElementById("cookies-panel");
 const seeCookies = document.getElementById("see-cookies");
 const cookiesList = document.getElementById("cookies");
 const cookieMore = document.getElementById("cookie-more");
+const clearCookies = document.getElementById("clear-cookies");
+const cookieFeedback = document.getElementById("cookie-feedback");
 const permissionsSection = document.getElementById("permissions-heading").parentElement;
 const permissionsList = document.getElementById("permissions");
 const blockingToggle = document.getElementById("blocking-toggle");
@@ -76,6 +79,15 @@ function render(details, summary) {
   renderPermissions(details);
 }
 
+/** A small label saying what kind of tracker the row is, e.g. Ads or Analytics. */
+function trackerBadge(host) {
+  const category = categorizeTrackerHost(host);
+  const badge = document.createElement("span");
+  badge.className = `tracker-badge tracker-badge--${category.id}`;
+  badge.textContent = category.label;
+  return badge;
+}
+
 function renderBlocked(summary) {
   // Not summary.topHosts: that is the browser-wide top ten, while the number
   // above counts this page only. Two different scopes for one panel was the bug.
@@ -103,12 +115,12 @@ function renderBlocked(summary) {
     const name = document.createElement("span");
     name.className = "blocked-host";
     name.textContent = host;
-    const badge = document.createElement("span");
-    badge.className = "blocked-count";
-    badge.textContent = formatCount(Number.isFinite(count) ? count : 0);
-    badge.title = `${Number.isFinite(count) ? count : 0} blocked request(s)`;
+    const countBadge = document.createElement("span");
+    countBadge.className = "blocked-count";
+    countBadge.textContent = formatCount(Number.isFinite(count) ? count : 0);
+    countBadge.title = `${Number.isFinite(count) ? count : 0} blocked request(s)`;
 
-    item.append(name, badge);
+    item.append(name, trackerBadge(host), countBadge);
     blockedList.append(item);
   }
 
@@ -143,9 +155,14 @@ function renderCookies(cookies) {
   cookieMore.hidden = true;
 
   if (list.length === 0) {
-    cookieTotal.hidden = true;
-    cookieUnit.hidden = true;
+    // The count stays on screen so "clear" can visibly land on zero; the hint
+    // explains why there is nothing to list.
+    cookieTotal.hidden = false;
+    cookieUnit.hidden = false;
+    cookieTotal.textContent = "0";
+    cookieUnit.textContent = "cookies";
     seeCookies.hidden = true;
+    clearCookies.hidden = true;
     setCookiesOpen(false);
     cookieEmpty.hidden = false;
     cookieEmpty.textContent = "No cookies stored by this site in your browser.";
@@ -157,6 +174,8 @@ function renderCookies(cookies) {
   cookieTotal.textContent = String(list.length);
   cookieUnit.textContent = list.length === 1 ? "cookie" : "cookies";
   seeCookies.hidden = false;
+  clearCookies.hidden = false;
+  clearCookies.disabled = false;
 
   const firstParty = list.filter((cookie) => cookie.party === "first-party").length;
   const thirdParty = list.length - firstParty;
@@ -239,6 +258,7 @@ async function loadCurrentSite() {
     cookieUnit.hidden = true;
     seeCookies.hidden = true;
     cookieMore.hidden = true;
+    clearCookies.hidden = true;
     setCookiesOpen(false);
     cookieEmpty.hidden = false;
     cookieEmpty.textContent = "Cookie details are unavailable on this page.";
@@ -270,6 +290,31 @@ breachChip.addEventListener("click", () => {
 
 cookieMore.addEventListener("click", () => {
   void openDashboard("#cookies");
+});
+
+// Clearing is destructive, so the confirmation states how many cookies went and
+// the popup then reloads, which is what moves the count to zero.
+clearCookies.addEventListener("click", async () => {
+  if (!current?.hostname || clearCookies.disabled) return;
+  const hostname = current.hostname;
+  clearCookies.disabled = true;
+  let message;
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "webguard.clearSiteCookies", hostname });
+    message = result?.ok
+      ? `Cleared ${result.removed} cookie${result.removed === 1 ? "" : "s"} for this site.`
+      : (result?.reason ?? "Cookies could not be cleared.");
+  } catch (error) {
+    message = "Cookies could not be cleared.";
+    console.error("WebGuard popup could not clear cookies.", error);
+  }
+  await loadCurrentSite();
+  cookieFeedback.hidden = false;
+  cookieFeedback.textContent = message;
+  window.setTimeout(() => {
+    cookieFeedback.hidden = true;
+    cookieFeedback.textContent = "";
+  }, 4_000);
 });
 
 blockingToggle.addEventListener("click", async () => {

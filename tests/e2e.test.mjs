@@ -287,6 +287,37 @@ describe("WebGuard end to end", () => {
     const siteRowSum = await page.locator("#blocked-list li.blocked-row .blocked-count").evaluateAll((nodes) =>
       nodes.reduce((sum, node) => sum + Number((node.title ?? "0").split(" ")[0]), 0));
     assert.strictEqual(siteRowSum, siteTotal, `source rows (${siteRowSum}) must add up to the site total (${siteTotal})`);
+
+    // Every real source row carries the kind of tracker it is, while the host and
+    // count cells stay exactly what they were so existing selectors keep working.
+    const sourceRows = await page.locator("#blocked-list li.blocked-row:not(.website-row)").evaluateAll((nodes) =>
+      nodes.map((node) => ({
+        host: node.querySelector(".blocked-host")?.textContent ?? "",
+        count: node.querySelector(".blocked-count")?.textContent ?? "",
+        badge: node.querySelector(".tracker-badge")?.textContent ?? "",
+        badgeClass: node.querySelector(".tracker-badge")?.className ?? ""
+      })));
+    const labelledRows = sourceRows.filter((row) => row.host !== "Other / unattributed");
+    assert.ok(labelledRows.length > 0, "the site list must have source rows");
+    for (const row of labelledRows) {
+      assert.ok(
+        ["Ads", "Analytics", "Session Replay", "Social", "Tracker"].includes(row.badge),
+        `every source row needs a known category badge, got "${row.badge}" for ${row.host}`
+      );
+      assert.match(row.badgeClass, /^tracker-badge tracker-badge--(ads|analytics|replay|social|tracker)$/);
+      assert.match(row.count, /^[\d.]+k?$/, "the count cell must stay the formatted count");
+      assert.ok(!row.host.includes(" "), `the host cell must stay just a hostname, got "${row.host}"`);
+    }
+    // The seeded trackers are analytics vendors, so this proves the mapping is real
+    // rather than every row falling back to the generic label.
+    assert.ok(
+      labelledRows.some((row) => row.badge === "Analytics"),
+      `expected an Analytics badge, got ${labelledRows.map((row) => row.badge).join(", ")}`
+    );
+    // The unattributed remainder is not a tracker and must stay unlabelled.
+    for (const row of sourceRows.filter((entry) => entry.host === "Other / unattributed")) {
+      assert.strictEqual(row.badge, "", "the unattributed remainder must not get a category badge");
+    }
     const trackerLabels = await page.locator("#chart-trackers svg text.label").allInnerTexts();
     assert.ok(trackerLabels.length <= 8, `the chart shows at most seven sources plus Other, got ${trackerLabels.length}`);
     // The bars (including the "Other (N sources)" bar) must add up to the total.
@@ -895,6 +926,53 @@ describe("WebGuard end to end", () => {
     await page.close();
   });
 
+  it("strips tracking parameters from a navigation, but not on an allowlisted site", async () => {
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+
+    // The redirect is a real DNR rule, so Chrome must report the cleaned URL, not
+    // Playwright rewriting anything.
+    // Each navigation changes keep=, because navigating to the exact URL the tab
+    // already shows would be a same-document navigation and never hit the network.
+    const dirty = (keep) => `${baseUrl}?utm_source=test&fbclid=123&keep=${keep}#section`;
+    await sitePage.goto(dirty(1), { waitUntil: "load", timeout: 30_000 });
+    await sitePage.waitForTimeout(1_000);
+    assert.strictEqual(await sitePage.evaluate(() => location.search), "?keep=1", "utm_source and fbclid must be stripped while keep=1 survives");
+    assert.strictEqual(await sitePage.evaluate(() => location.hash), "#section", "the fragment must survive the redirect");
+
+    // The allowlist is what turns the exclusions on for both request and initiator
+    // matching, so an allowlisted site must see its URL untouched.
+    await pickTarget(page, ["127.0.0.1"]);
+    await page.click("#allowlist-toggle");
+    await page.waitForFunction(
+      () => document.getElementById("allowlist-toggle")?.textContent?.includes("Remove"),
+      null,
+      { timeout: 15_000 }
+    );
+    await sitePage.goto(dirty(2), { waitUntil: "load", timeout: 30_000 });
+    await sitePage.waitForTimeout(1_000);
+    assert.strictEqual(
+      await sitePage.evaluate(() => location.search),
+      "?utm_source=test&fbclid=123&keep=2",
+      "an allowlisted site must keep its query string exactly as requested"
+    );
+
+    await page.click("#allowlist-toggle");
+    await page.waitForFunction(
+      () => document.getElementById("allowlist-toggle")?.textContent?.includes("Allowlist"),
+      null,
+      { timeout: 15_000 }
+    );
+
+    // And with the allowlist gone the stripping is back.
+    await sitePage.goto(dirty(3), { waitUntil: "load", timeout: 30_000 });
+    await sitePage.waitForTimeout(1_000);
+    assert.strictEqual(await sitePage.evaluate(() => location.search), "?keep=3", "stripping must resume once the site is removed from the allowlist");
+
+    await page.close();
+  });
+
   it("meets basic accessibility: contrast, heading order, focus ring, 200% zoom", async () => {
     const page = await context.newPage();
     await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -1026,6 +1104,11 @@ describe("WebGuard end to end", () => {
     assert.ok(blockedRows >= 1, `the seeded trackers must appear in the blocked list, got "${blockedText}"`);
     for (const row of await page.locator("#blocked-list li.blocked-row").all()) {
       assert.match(await row.locator(".blocked-count").innerText(), /^[\d.]+k?$/, "every blocked row needs a count");
+      assert.match(await row.locator(".blocked-host").innerText(), /^[a-z0-9.-]+$/i, "the host cell holds only the hostname");
+      assert.ok(
+        ["Ads", "Analytics", "Session Replay", "Social", "Tracker"].includes(await row.locator(".tracker-badge").innerText()),
+        "every popup row needs a category badge"
+      );
     }
     // The expanded list must describe the same page as the hero number, not the
     // browser-wide top hosts: the per-host counts add up to the tab total.
@@ -1117,6 +1200,50 @@ describe("WebGuard end to end", () => {
     await mkdir(directory, { recursive: true });
     await page.screenshot({ path: join(directory, "popup-live.png"), fullPage: true });
 
+    // Clearing this site's cookies is the destructive action next to the cookie
+    // count: it must land on zero and say how many cookies it removed.
+    assert.strictEqual(await page.locator("#clear-cookies").isVisible(), true, "the clear button is offered while cookies exist");
+    await page.click("#clear-cookies");
+    await page.waitForFunction(() => document.getElementById("cookie-total")?.textContent === "0", null, { timeout: 15_000 });
+    assert.match(await page.locator("#cookie-feedback").innerText(), /^Cleared \d+ cookies? for this site\.$/, "the popup must confirm the removal");
+    assert.strictEqual(await page.locator("#clear-cookies").isVisible(), false, "with no cookies left the button goes away");
+    assert.strictEqual(
+      await page.evaluate(async () => (await chrome.cookies.getAll({ domain: "127.0.0.1" })).length),
+      0,
+      "no cookie may survive the clear"
+    );
+
+    await page.close();
+  });
+
+  it("clears a site's cookies from the dashboard", async () => {
+    await context.addCookies([
+      { name: "webguard_dashboard_a", value: "a", domain: "127.0.0.1", path: "/" },
+      { name: "webguard_dashboard_b", value: "b", domain: "127.0.0.1", path: "/" }
+    ]);
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+
+    await pickTarget(page, ["127.0.0.1"]);
+    await page.waitForFunction(() => document.getElementById("clear-site-cookies")?.disabled === false, null, { timeout: 15_000 });
+    const listed = await page.locator("#cookies-list li").count();
+    assert.ok(listed >= 2, `the seeded cookies must be listed, saw ${listed}`);
+
+    await page.click("#clear-site-cookies");
+    await page.waitForFunction(
+      () => /^Cleared \d+ cookies? for this site\.$/.test(document.getElementById("cookies-status")?.textContent ?? ""),
+      null,
+      { timeout: 20_000 }
+    );
+    assert.strictEqual(await page.locator("#cookies-list li").count(), 0, "every cookie row must be gone");
+    assert.strictEqual(await page.locator("#clear-site-cookies").isDisabled(), true, "the button disables itself with no cookies left");
+    assert.strictEqual(
+      await page.evaluate(async () => (await chrome.cookies.getAll({ domain: "127.0.0.1" })).length),
+      0,
+      "no cookie may survive the clear"
+    );
+
     await page.close();
   });
 
@@ -1136,12 +1263,16 @@ describe("WebGuard end to end", () => {
     assert.ok(siteTabId, "the seeded site tab must still be open");
 
     const browserSession = await context.browser().newBrowserCDPSession();
+    // An earlier test can leave a popup.html tab open, and matching the target by
+    // URL alone would then attach to that stale tab instead of the popup the action
+    // just opened. Only a target that did not exist before counts.
+    const before = new Set((await browserSession.send("Target.getTargets")).targetInfos.map((info) => info.targetId));
     await worker.evaluate(() => chrome.action.openPopup());
 
     let popupTarget = null;
     for (let attempt = 0; attempt < 50 && !popupTarget; attempt += 1) {
       const { targetInfos } = await browserSession.send("Target.getTargets");
-      popupTarget = targetInfos.find((info) => info.type === "page" && info.url === POPUP_URL) ?? null;
+      popupTarget = targetInfos.find((info) => info.type === "page" && info.url === POPUP_URL && !before.has(info.targetId)) ?? null;
       if (!popupTarget) await wait(200);
     }
     assert.ok(popupTarget, "the toolbar button must open the popup window");
