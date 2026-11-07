@@ -54,6 +54,24 @@ async function pickTarget(page, preferred = ["example.com", "127.0.0.1"]) {
   return chosen;
 }
 
+/**
+ * Makes a public domain selectable by recording one visit for it. The picker is
+ * built from open tabs and history, so this seeds exactly what a user who
+ * browsed that site would have — without depending on the network.
+ */
+async function seedPublicDomain(page, hostname = "example.com") {
+  await page.evaluate(async (host) => {
+    const stored = await chrome.storage.local.get("historyEvents");
+    const events = Array.isArray(stored?.historyEvents) ? stored.historyEvents : [];
+    await chrome.storage.local.set({ historyEvents: [...events, { hostname: host, timestamp: Date.now() }] });
+  }, hostname);
+  await page.waitForFunction(
+    (host) => [...document.getElementById("target-select").options].some((option) => option.value === host),
+    hostname,
+    { timeout: 15_000 }
+  );
+}
+
 function assertNoOverflow(width, height) {
   return async (page, label) => {
     await page.setViewportSize({ width, height });
@@ -200,7 +218,8 @@ describe("WebGuard end to end", () => {
     assert.match(await page.locator("#target-select option").first().innerText(), /All sites/);
     assert.strictEqual(await page.locator("#inspect-site").isVisible(), true, "all sites mode offers the inspect card");
     assert.strictEqual(await page.locator("#cookies").isVisible(), false, "cookies are site-only");
-    assert.strictEqual(await page.locator("#site-tabs").isVisible(), false, "the site jump bar is site-only");
+    assert.strictEqual(await page.locator("header nav a[data-site-only]").count(), 5, "five site-only nav links must be marked");
+    assert.strictEqual(await page.locator("header nav a[data-site-only]:visible").count(), 0, "site-only nav links are hidden in all-sites mode");
     assert.strictEqual(await page.locator("#expected-toggle").isDisabled(), true, "site actions are disabled for all sites");
     assert.match(
       await page.locator("#block-unit").innerText(),
@@ -232,8 +251,7 @@ describe("WebGuard end to end", () => {
     const target = await pickTarget(page, ["127.0.0.1", "example.com"]);
     assert.strictEqual(await page.locator("#cookies").isVisible(), true, "picking a site reveals its cookies");
     assert.strictEqual(await page.locator("#inspect-site").isVisible(), false, "the inspect card makes way for the site view");
-    assert.strictEqual(await page.locator("#site-tabs").isVisible(), true, "site mode offers the jump bar");
-    assert.ok((await page.locator("#site-tabs a").count()) >= 5, "the jump bar links to every site section");
+    assert.strictEqual(await page.locator("header nav a[data-site-only]:visible").count(), 5, "site mode offers every site-only section in the top nav");
     assert.match(
       await page.locator("#block-unit").innerText(),
       /^blocked requests from \d+ sources? on this site$/,
@@ -357,30 +375,80 @@ describe("WebGuard end to end", () => {
     }
   });
 
-  it("looks up RDAP on demand and reports a real registry", async () => {
-    // A registry answer needs a real domain, so open one first; the picker then
-    // offers it from the open tabs even when it never made it into history.
-    const siteTab = await context.newPage();
-    const reachedExample = await siteTab
-      .goto("https://example.com", { waitUntil: "domcontentloaded", timeout: 20_000 })
-      .then(() => true)
-      .catch(() => false);
-
+  it("hides site-only top-nav links in all-sites mode and shows them in site mode", async () => {
     const page = await context.newPage();
     await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
-    const target = await pickTarget(page, reachedExample ? ["example.com", "127.0.0.1"] : ["127.0.0.1"]);
+
+    // In all-sites mode the top nav should only have the four global sections.
+    assert.strictEqual(await page.locator('header nav a[href="#overview"]').count(), 1, "Overview must appear once in the nav");
+    assert.strictEqual(await page.locator("header nav a[data-site-only]").count(), 5, "the five site-only links must be marked in the markup");
+    const topNavAll = await page.evaluate(() =>
+      [...document.querySelectorAll("header nav a")].map((link) => ({
+        href: link.getAttribute("href"),
+        hidden: link.hidden,
+        text: link.textContent
+      }))
+    );
+    const siteOnly = topNavAll.filter((link) =>
+      ["#cookies", "#permissions", "#domain", "#suspicious", "#breach"].includes(link.href));
+    assert.strictEqual(siteOnly.length, 5, "five site-only nav links must exist in the markup");
+    for (const link of siteOnly) {
+      assert.strictEqual(link.hidden, true, `site-only link ${link.href} must be hidden in all-sites mode, got hidden=${link.hidden}`);
+    }
+    const globalLinks = topNavAll.filter((link) => !link.hidden);
+    assert.ok(globalLinks.length >= 4, `all-sites mode must expose at least 4 global links, got ${globalLinks.length}`);
+    assert.ok(globalLinks.some((link) => link.href === "#overview"), "Overview must still be a global link");
+
+    // Selecting a site turns those links back on.
+    await page.selectOption("#target-select", "127.0.0.1");
+    await page.waitForFunction(
+      () => document.getElementById("target-summary")?.textContent?.startsWith("127.0.0.1"),
+      null,
+      { timeout: 15_000 }
+    );
+    const topNavSite = await page.evaluate(() =>
+      [...document.querySelectorAll("header nav a")].map((link) => ({
+        href: link.getAttribute("href"),
+        hidden: link.hidden,
+        text: link.textContent
+      }))
+    );
+    for (const href of ["#cookies", "#permissions", "#domain", "#suspicious", "#breach"]) {
+      const link = topNavSite.find((l) => l.href === href);
+      assert.ok(link && !link.hidden, `site-only link ${href} must be clickable in site mode`);
+    }
+
+    // The old #site-tabs strip under #site-picker is gone; there is no duplicate
+    // navigation inside the overview anymore.
+    assert.strictEqual(await page.locator("#site-picker #site-tabs").count(), 0, "the redundant #site-tabs strip must be removed");
+    assert.strictEqual(await page.locator("main #site-tabs").count(), 0, "there must be no #site-tabs inside the main content either");
+
+    await page.close();
+  });
+
+  it("looks up RDAP on demand and reports a real registry", async () => {
+    // A registry answer needs a real domain, so seed one into the picker.
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+    await seedPublicDomain(page);
+    const target = await pickTarget(page, ["example.com"]);
     await page.waitForTimeout(800);
 
+    // Selecting a public domain starts an automatic lookup; the button is disabled
+    // while that is in flight, so wait for it to settle instead of racing it.
+    await page.waitForFunction(() => document.getElementById("rdap-lookup")?.disabled === false, null, { timeout: 30_000 });
+    assert.strictEqual(await page.locator("#rdap-lookup").isDisabled(), false, "the lookup button is usable once the site is selected");
     await page.click("#rdap-lookup");
     // The summary updates before the detail rows are re-rendered, so wait for the
     // rows themselves rather than reading immediately after the first change.
     await page.waitForFunction(
       () => {
         const summary = document.getElementById("domain-summary")?.textContent ?? "";
-        const settled = !summary.startsWith("Looking this domain up");
+        const pending = /^(?:No registry data yet|Looking this domain up)/i.test(summary);
         const rendered = document.querySelectorAll("#domain-details dt").length > 0;
-        return settled && (rendered || /unavailable|could not|no record|no registry/i.test(summary));
+        return !pending && (rendered || /unavailable|could not|no record|no registry|no rdap/i.test(summary));
       },
       null,
       { timeout: 30_000 }
@@ -397,11 +465,54 @@ describe("WebGuard end to end", () => {
       const details = await page.locator("#domain-details").innerText();
       assert.ok(details.includes("Registrar"), "registrar row required");
     } else {
-      assert.ok(/unavailable|could not|no record|no registry/i.test(summary), `unexpected RDAP message: ${summary}`);
+      assert.ok(/unavailable|could not|no record|no registry|no rdap/i.test(summary), `unexpected RDAP message: ${summary}`);
     }
     assert.ok(target, "a site was selected");
     await page.close();
-    await siteTab.close();
+  });
+
+  it("auto-looks up RDAP for a selected public domain", async () => {
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+
+    // The picker only lists sites that were browsed, so seed a real public
+    // domain and select it through the same change handler a user click uses.
+    await seedPublicDomain(page);
+    const target = await pickTarget(page, ["example.com"]);
+
+    // Settled means neither the empty default nor the in-flight spinner; that is
+    // how an automatic lookup reports in, whatever the registry answers.
+    await page.waitForFunction(
+      () => {
+        const summary = document.getElementById("domain-summary")?.textContent ?? "";
+        const pending = /^(?:No registry data yet|Looking this domain up)/i.test(summary);
+        return summary.length > 0 && !pending;
+      },
+      null,
+      { timeout: 35_000 }
+    );
+
+    const summary = await page.locator("#domain-summary").innerText();
+    // A public domain must not leave the Domain Info section on the empty default.
+    assert.ok(
+      !/No registry data yet/.test(summary),
+      `selecting a public domain must not leave Domain Info empty: ${summary}`
+    );
+    if (/registry data/i.test(summary)) {
+      const rows = await page.locator("#domain-details dt").count();
+      assert.ok(rows >= 1, `auto-lookup must render registry rows, got ${rows} for "${summary}"`);
+      const details = await page.locator("#domain-details").innerText();
+      assert.ok(details.includes("Registrar"), "auto-lookup must report the registrar");
+      // Once data is cached the button offers a refresh instead of a first lookup.
+      assert.strictEqual(await page.locator("#rdap-lookup").innerText(), "Refresh RDAP");
+      const labels = await page.locator("#domain-details dt").allInnerTexts();
+      for (const label of ["Registered", "Updated", "Expires", "Domain age", "Status"]) {
+        assert.ok(labels.includes(label), `Domain Info must show ${label}, got ${labels.join(", ")}`);
+      }
+    }
+    assert.ok(target, "a site was selected");
+    await page.close();
   });
 
   it("persists settings, history and the allowlist across a reload", async () => {

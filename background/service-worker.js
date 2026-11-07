@@ -5,7 +5,14 @@ import { BLOCKING_DATA_KEY, createDataSync } from "./data-sync.mjs";
 import { BREACH_DATA_KEY, checkHostForBreaches } from "../lib/breach-checker.mjs";
 import { inspectSiteCookies } from "../lib/cookie-inspector.mjs";
 import { createDashboardService } from "./dashboard-service.mjs";
-import { DOMAIN_CACHE_KEY, cachedDomainInfo, createBootstrapStore, IANA_BOOTSTRAP_URL, lookupDomain, TLS_LIMITATION } from "../lib/domain-info.mjs";
+import {
+  cachedDomainInfo,
+  createBootstrapStore,
+  IANA_BOOTSTRAP_URL,
+  lookupDomain,
+  saveDomainInfo,
+  TLS_LIMITATION
+} from "../lib/domain-info.mjs";
 import { formatBadgeCount } from "../lib/format.mjs";
 import { scoreRisk } from "../lib/risk-score.mjs";
 import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs";
@@ -92,19 +99,6 @@ const dashboardService = createDashboardService({
   blockingCounter
 });
 
-async function storeDomainInfo(hostname, value) {
-  try {
-    const stored = await chrome.storage.local.get(DOMAIN_CACHE_KEY);
-    const cache = stored?.[DOMAIN_CACHE_KEY] && typeof stored[DOMAIN_CACHE_KEY] === "object" ? stored[DOMAIN_CACHE_KEY] : {};
-    const entries = Object.entries(cache).slice(-50);
-    const next = Object.fromEntries(entries);
-    next[hostname] = { at: Date.now(), value };
-    await chrome.storage.local.set({ [DOMAIN_CACHE_KEY]: next });
-  } catch (error) {
-    console.error("WebGuard could not cache domain info.", error);
-  }
-}
-
 async function suspiciousInfo(tabId) {
   if (!Number.isInteger(tabId) || tabId < 0) throw new TypeError("A valid tab ID is required.");
   const tab = await chrome.tabs.get(tabId);
@@ -153,8 +147,11 @@ async function rdapLookup({ tabId, hostname: requestedHost } = {}) {
     }
   }
 
-  const result = await lookupDomain(hostname, { bootstrap: bootstrap ?? undefined });
-  if (result.status === "ok") await storeDomainInfo(hostname, result);
+  // null tells the lib not to repeat the download this worker just attempted.
+  const result = await lookupDomain(hostname, { bootstrap: bootstrap ?? null });
+  // Keyed by registrable domain inside the lib, so edition.cnn.com and cnn.com
+  // share one cache entry and the dashboard finds it for either.
+  if (result.status === "ok") await saveDomainInfo(chrome.storage.local, hostname, result);
   return result;
 }
 

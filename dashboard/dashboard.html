@@ -31,12 +31,14 @@
         </div>
         <nav aria-label="Sections">
           <a href="#overview">Overview</a>
-          <a href="#cookies">Cookies</a>
-          <a href="#permissions">Permissions</a>
-          <a href="#domain">Domain Info</a>
+          <!-- Site-only sections are marked so the nav only offers links that
+               exist in the current mode; "All sites" hides them. -->
+          <a href="#cookies" data-site-only>Cookies</a>
+          <a href="#permissions" data-site-only>Permissions</a>
+          <a href="#domain" data-site-only>Domain Info</a>
           <a href="#ads">Ads &amp; Trackers</a>
-          <a href="#suspicious">Suspicious</a>
-          <a href="#breach">Breach &amp; OSINT</a>
+          <a href="#suspicious" data-site-only>Suspicious</a>
+          <a href="#breach" data-site-only>Breach &amp; OSINT</a>
           <a href="#history">History</a>
           <a href="#settings">Settings</a>
         </nav>
@@ -53,14 +55,6 @@
         <button id="refresh-site" type="button">Refresh</button>
         <p id="target-summary"></p>
       </section>
-
-      <nav id="site-tabs" class="site-tabs" aria-label="Selected site sections" hidden>
-        <a href="#overview">Overview &amp; Blocking</a>
-        <a href="#cookies">Cookies</a>
-        <a href="#permissions">Permissions</a>
-        <a href="#domain">Risk &amp; Domain</a>
-        <a href="#breach">Breaches</a>
-      </nav>
 
       <section id="inspect-site" aria-labelledby="inspect-heading">
         <h2 id="inspect-heading">Inspect a site</h2>
@@ -100,7 +94,7 @@
       <section id="domain" aria-labelledby="domain-heading">
         <h2 id="domain-heading">Domain Info</h2>
         <p id="domain-summary"></p>
-        <button id="rdap-lookup" type="button" class="btn-primary">Look up RDAP</button>
+        <button id="rdap-lookup" type="button" class="btn-primary" disabled>Look up RDAP</button>
         <p class="hint" id="rdap-note">RDAP is the public domain registry lookup that replaced WHOIS. It returns who registered a domain and the registration date, straight from the registry.</p>
         <dl id="domain-details"></dl>
       </section>

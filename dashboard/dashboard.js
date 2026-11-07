@@ -1,5 +1,6 @@
 import { barChartModel, CHART_HEIGHT, CHART_WIDTH, horizontalBarModel } from "./charts.mjs";
 import { formatCount } from "../lib/format.mjs";
+import { isPublicDomain } from "../lib/domain-info.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const state = { target: null, targets: null, overview: null, site: null, frame: "today" };
@@ -469,7 +470,10 @@ async function loadSite(hostname) {
   el("target-summary").textContent = `${report.hostname}${report.suspicious.isHttps === false ? " (plain HTTP)" : ""}`;
   el("expected-toggle").disabled = false;
   el("allowlist-toggle").disabled = false;
-  el("rdap-lookup").disabled = false;
+
+  const hasRegistryData = report.domainInfo?.status === "ok";
+  el("rdap-lookup").disabled = domainLookupInFlight;
+  el("rdap-lookup").textContent = hasRegistryData ? "Refresh RDAP" : "Look up RDAP";
 
   const cookiesList = el("cookies-list");
   clear(cookiesList);
@@ -512,6 +516,11 @@ async function loadSite(hostname) {
 
   renderDomainDetails(report.domainInfo, report.hostname);
 
+  // Registry data is loaded once a public domain is selected, so the reader gets
+  // the registrar and dates without having to click first. IPs, local hosts and
+  // anything already cached are skipped.
+  if (!hasRegistryData && isPublicDomain(report.hostname)) void lookupSelectedDomain(report.hostname);
+
   el("ads-status").textContent = `Blocking is ${state.overview?.blocking.enabled ? "on" : "off"} for this browser.`;
   el("allowlist-status").textContent = report.allowlisted ? "This site is allowlisted, so blocking is skipped here." : "This site is not allowlisted.";
   el("allowlist-toggle").textContent = report.allowlisted ? "Remove from allowlist" : "Allowlist this site";
@@ -551,24 +560,70 @@ async function loadSite(hostname) {
   }
 }
 
+/** A registry timestamp as a plain date; the time of day is never useful here. */
+function registryDate(value) {
+  if (typeof value !== "string") return "not reported";
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : value;
+}
+
 /** Registry rows, painted from whatever RDAP answer is current. */
-function renderDomainDetails(info, hostname) {
-  el("domain-summary").textContent = info
+function renderDomainDetails(info, hostname, summary = null) {
+  el("domain-summary").textContent = summary ?? (info
     ? `Cached registry data for ${hostname}.`
-    : "No registry data yet. Use the button to look this domain up.";
+    : "No registry data yet. Use the button to look this domain up.");
   const details = el("domain-details");
   clear(details);
   if (!info || info.status !== "ok") return;
   const ageDays = Number(info.ageDays);
+  const statuses = Array.isArray(info.statuses) && info.statuses.length ? info.statuses.join(", ") : "not reported";
   for (const [key, value] of Object.entries({
     Registrar: info.registrar ?? "not reported",
-    Registered: info.registrationDate ?? "not reported",
-    Age: Number.isFinite(ageDays) ? `${ageDays} day${ageDays === 1 ? "" : "s"}` : "unknown",
+    Registered: registryDate(info.registrationDate),
+    Updated: registryDate(info.lastChangedDate),
+    Expires: registryDate(info.expirationDate),
+    "Domain age": Number.isFinite(ageDays) ? `${ageDays} day${ageDays === 1 ? "" : "s"}` : "unknown",
+    Status: statuses,
     Source: info.source ?? "unknown"
   })) {
     const wrapper = document.createElement("div");
     wrapper.append(text("dt", key), text("dd", value));
     details.append(wrapper);
+  }
+}
+
+// One registry request at a time: a re-render must not start a second lookup or
+// re-enable the button while an answer is still in flight.
+let domainLookupInFlight = false;
+
+function domainResultSummary(result, hostname) {
+  if (result?.status === "ok") return `Registry data for ${hostname} from ${result.source}.`;
+  return result?.reason ?? "Domain information is unavailable.";
+}
+
+/**
+ * Looks up the selected site's registry record and repaints Domain Info. The
+ * background caches the answer, so a successful lookup is followed by one
+ * re-read of the site report, which is what refreshes the risk score too.
+ */
+async function lookupSelectedDomain(hostname) {
+  if (!hostname || domainLookupInFlight) return;
+  domainLookupInFlight = true;
+  const button = el("rdap-lookup");
+  button.disabled = true;
+  el("domain-summary").textContent = "Looking this domain up…";
+  try {
+    const result = await send({ type: "webguard.lookupDomain", hostname });
+    // A scope change during the lookup must not paint another site's data.
+    if (state.target !== hostname) return;
+    button.textContent = result?.status === "ok" ? "Refresh RDAP" : "Look up RDAP";
+    renderDomainDetails(result?.status === "ok" ? result : null, hostname, domainResultSummary(result, hostname));
+    if (result?.status === "ok") await loadSite(hostname);
+  } catch (error) {
+    if (state.target === hostname) renderDomainDetails(null, hostname, "Registry data could not be loaded.");
+  } finally {
+    domainLookupInFlight = false;
+    button.disabled = !state.target;
   }
 }
 
@@ -595,6 +650,7 @@ function resetSiteSections() {
 
   el("domain-summary").textContent = "Select a site above to look up its registry data.";
   clear(el("domain-details"));
+  el("rdap-lookup").textContent = "Look up RDAP";
   el("rdap-lookup").disabled = true;
 
   el("risk-summary").textContent = "Select a site above to see its risk score.";
@@ -608,11 +664,14 @@ function resetSiteSections() {
   el("ads-status").textContent = `Blocking is ${state.overview?.blocking.enabled ? "on" : "off"} for this browser.`;
 }
 
-/** All-sites mode hides the per-site panels; site mode reveals them plus a jump bar. */
+/** All-sites mode hides the per-site panels and the site-only top-nav links. */
 function setSiteMode(isSite) {
   el("inspect-site").hidden = isSite;
-  el("site-tabs").hidden = !isSite;
+  // The header nav is the only section list now (the old #site-tabs strip is
+  // gone), so it is pruned to the links that exist in the current mode.
   for (const id of SITE_ONLY_SECTIONS) el(id).hidden = !isSite;
+  for (const link of document.querySelectorAll("header nav a[data-site-only]")) link.hidden = !isSite;
+  syncNav();
 }
 
 /** Clickable quick-picks for open tabs and recently visited domains. */
@@ -702,22 +761,24 @@ async function refresh() {
 
 // Highlight the section the reader is looking at, so the nav doubles as a
 // position indicator on a long page.
-const navLinks = [...document.querySelectorAll("nav a")];
-const navSections = navLinks
-  .map((link) => document.querySelector(link.getAttribute("href")))
-  .filter(Boolean);
+const navLinks = [...document.querySelectorAll("header nav a")];
 
 // The last section whose top has passed under the sticky header is the one being
 // read. Measuring on scroll is deterministic at load, unlike an observer that
-// needs a threshold to be crossed.
+// needs a threshold to be crossed. Hidden sections are skipped: a display:none
+// box reports top 0 and would otherwise win the comparison.
 function syncNav() {
   const offset = 160;
-  let active = navSections[0];
-  for (const section of navSections) {
+  const sections = navLinks
+    .filter((link) => !link.hidden)
+    .map((link) => document.querySelector(link.getAttribute("href")))
+    .filter((section) => section && !section.hidden);
+  let active = sections[0] ?? null;
+  for (const section of sections) {
     if (section.getBoundingClientRect().top <= offset) active = section;
   }
   for (const link of navLinks) {
-    if (active && link.getAttribute("href") === `#${active.id}`) link.setAttribute("aria-current", "true");
+    if (active && !link.hidden && link.getAttribute("href") === `#${active.id}`) link.setAttribute("aria-current", "true");
     else link.removeAttribute("aria-current");
   }
 }
@@ -784,21 +845,9 @@ el("frame-select").addEventListener("change", async (event) => {
   await loadBlockedForSite();
 });
 
-el("rdap-lookup").addEventListener("click", async () => {
+el("rdap-lookup").addEventListener("click", () => {
   if (!state.target) return;
-  // Capture the target before awaiting: a scope change during the lookup used to
-  // reset the section right after a successful answer came back.
-  const targetHost = state.target;
-  el("domain-summary").textContent = "Looking this domain up…";
-  const result = await send({ type: "webguard.lookupDomain", hostname: targetHost });
-  if (result?.status === "ok") {
-    el("domain-summary").textContent = `Registry data for ${result.hostname} from ${result.source}.`;
-    renderDomainDetails(result, result.hostname ?? targetHost);
-  } else {
-    el("domain-summary").textContent = result?.reason ?? "Domain information is unavailable.";
-    clear(el("domain-details"));
-  }
-  if (state.target === targetHost) await loadSite(targetHost);
+  void lookupSelectedDomain(state.target);
 });
 
 el("clear-history").addEventListener("click", async () => {

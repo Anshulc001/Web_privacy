@@ -160,6 +160,9 @@ nav a {
 
 nav a:hover { color: var(--text); background: var(--surface-2); }
 
+/* Hidden links stay out of the layout even if a rule above sets a display. */
+nav a[hidden] { display: none; }
+
 nav a[aria-current="true"] {
   color: var(--accent);
   background: var(--accent-soft);
@@ -602,15 +605,6 @@ dl#domain-details dd { margin: 0; font-weight: 500; }
 }
 
 /* ---------- site mode / inspect chips ---------- */
-
-.site-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s1);
-  margin: calc(-1 * var(--s2)) 0 0;
-}
-
-.site-tabs[hidden] { display: none; }
 
 .chips {
   display: flex;
