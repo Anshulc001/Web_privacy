@@ -45,8 +45,39 @@ async function activeSettings() {
 // for every blocked request would be worse than the storm it is guarding.
 const tabSites = new Map();
 chrome.tabs.onRemoved.addListener((tabId) => tabSites.delete(tabId));
+
+/**
+ * A tab's blocked count belongs to the document it is showing. The reset runs on
+ * the main-frame request rather than on commit or `tabs.onUpdated`: a fast page
+ * can have its subresources blocked before the commit event reaches the worker,
+ * and resetting afterwards wiped counts that had just been recorded.
+ */
+function resetPage(tabId, url) {
+  if (!Number.isInteger(tabId) || tabId < 0) return;
+  tabSites.set(tabId, hostnameFromUrl(url));
+  void blockingCounter
+    .resetTab(tabId)
+    .then(() => updateBadge(tabId))
+    .catch((error) => console.error("WebGuard could not reset a tab count.", error));
+}
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details?.type !== "main_frame" || !Number.isInteger(details.tabId) || details.tabId < 0) return;
+    resetPage(details.tabId, details.url);
+  },
+  { urls: ["<all_urls>"], types: ["main_frame"] }
+);
+
+// Fallback for a main-frame change the request listener did not see (a worker
+// waking up late, or a tab moved by something other than a new request). A late
+// update can still carry a non-web URL such as about:blank while a real page is
+// loading; resetting for that would wipe the counts it had just recorded.
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (typeof info?.url === "string") tabSites.set(tabId, hostnameFromUrl(info.url));
+  if (typeof info?.url !== "string") return;
+  const host = hostnameFromUrl(info.url);
+  if (!host || tabSites.get(tabId) === host) return;
+  resetPage(tabId, info.url);
 });
 
 const bootstrapStore = createBootstrapStore(chrome.storage.local);
@@ -186,13 +217,6 @@ async function currentSitePrivacy(tabId) {
 }
 
 chrome.webNavigation.onCommitted.addListener((details) => {
-  if (details?.frameId === 0) {
-    tabSites.set(details.tabId, hostnameFromUrl(details.url));
-    void blockingCounter
-      .resetTab(details.tabId)
-      .then(() => updateBadge(details.tabId))
-      .catch((error) => console.error("WebGuard could not reset a tab count.", error));
-  }
   void recordTopLevelNavigation(details).catch((error) => {
     console.error("WebGuard could not record a navigation.", error);
   });
@@ -220,6 +244,8 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
   void (async () => {
     if (!isBlockedByClient(details)) return;
     const settings = await activeSettings();
+    // A request can be blocked before the page is known (the main-frame reset may
+    // still be queued), so fall back to the initiator instead of dropping it.
     const site = tabSites.get(details.tabId) ?? hostnameFromUrl(details.initiator);
     // A paused or allowlisted site must not keep inflating the count.
     if (!shouldCountBlockedRequest(settings, site)) return;
@@ -269,6 +295,15 @@ function runAllDataSyncs() {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm?.name === DATA_SYNC_ALARM) runAllDataSyncs();
+});
+
+// Chrome starts an extension worker at browser launch only when it has a reason
+// to, and a worker that starts on the first navigation is already too late: the
+// requests of that page are dispatched before these listeners exist, so its
+// blocked counts are lost. The startup hook starts the worker while the browser
+// is still opening, and warms the settings cache the first requests will need.
+chrome.runtime.onStartup.addListener(() => {
+  void activeSettings().catch((error) => console.error("WebGuard could not load settings on startup.", error));
 });
 
 void chrome.alarms.create(DATA_SYNC_ALARM, { periodInMinutes: 1_440, persistAcrossSessions: true }).catch((error) => {

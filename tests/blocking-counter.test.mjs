@@ -308,3 +308,32 @@ test("resetTab ignores an invalid or unknown tab", async () => {
   assert.equal(await counter.resetTab("7"), false);
   assert.equal(await counter.resetTab(99), false);
 });
+
+test("serializes resetTab behind an in-flight record so a navigation cannot wipe a new count", async () => {
+  const values = {};
+  const writes = [];
+  const counter = createBlockingCounter({
+    async get(key) {
+      // A storage read that takes long enough for a navigation reset to be queued
+      // while the record is still in flight.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { [key]: values[key] };
+    },
+    async set(update) {
+      writes.push(JSON.stringify(update.blockingCounts.tabs));
+      Object.assign(values, update);
+    }
+  }, () => Date.parse("2026-10-25T12:00:00Z"));
+
+  const recorded = counter.record({ error: "net::ERR_BLOCKED_BY_CLIENT", tabId: 12, url: "https://ads.test/a" });
+  const reset = counter.resetTab(12);
+  await Promise.all([recorded, reset]);
+
+  assert.deepEqual(writes, ['{"12":1}', "{}"], "the record must land before the reset, never after it");
+  assert.equal((await counter.summary(12)).tab, 0, "the navigation reset must be the last write");
+  assert.equal((await counter.summary(12)).today, 1, "the stored day total is unaffected by a tab reset");
+
+  // Requests that arrive after the reset belong to the new page and count again.
+  await counter.record({ error: "net::ERR_BLOCKED_BY_CLIENT", tabId: 12, url: "https://ads.test/a" });
+  assert.equal((await counter.summary(12)).tab, 1);
+});
