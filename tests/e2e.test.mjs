@@ -79,6 +79,8 @@ describe("WebGuard end to end", () => {
       response.writeHead(200, { "content-type": "text/html" });
       response.end(`<!doctype html><html><head><title>Test Site</title></head><body>
         <h1>Test site</h1>
+        <div id="div-gpt-ad-banner">Ad</div>
+        <ins class="adsbygoogle">Ad</ins>
         <script src="/control.js"></script>
         ${TRACKERS.map((url) => `<script src="${url}"></script>`).join("\n")}
       </body></html>`);
@@ -599,6 +601,102 @@ describe("WebGuard end to end", () => {
       assert.ok(name in entry.permissionStates, `permission ${name} must be recorded`);
     }
     assert.ok(!entry.thirdPartyHosts.includes("example.com"), "a site is not its own third party");
+  });
+
+  it("hides ad placeholders and restores them live when the site is allowlisted or blocking is off", async () => {
+    const readAds = () =>
+      sitePage.evaluate(() => {
+        const style = document.getElementById("webguard-cosmetic-filter");
+        return {
+          injected: Boolean(style),
+          parent: style?.parentElement?.tagName ?? null,
+          css: style?.textContent ?? "",
+          banner: getComputedStyle(document.querySelector("#div-gpt-ad-banner")).display,
+          inline: getComputedStyle(document.querySelector("ins.adsbygoogle")).display,
+          heading: getComputedStyle(document.querySelector("h1")).display
+        };
+      });
+
+    await sitePage.reload({ waitUntil: "load", timeout: 30_000 });
+    await sitePage.waitForFunction(
+      () => document.getElementById("webguard-cosmetic-filter") !== null,
+      null,
+      { timeout: 15_000 }
+    );
+    const hidden = await readAds();
+    assert.strictEqual(hidden.banner, "none", "the ad slot must be hidden");
+    assert.strictEqual(hidden.inline, "none", "the AdSense placeholder must be hidden");
+    assert.notStrictEqual(hidden.heading, "none", "real page content must stay visible");
+    assert.ok(hidden.css.includes("display: none !important"), "the injected stylesheet must hide matched slots");
+    assert.strictEqual(hidden.parent, "HEAD", "the injected style element belongs in head");
+
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+    await page.selectOption("#target-select", "127.0.0.1");
+    await page.waitForFunction(
+      () => document.getElementById("target-summary")?.textContent?.startsWith("127.0.0.1"),
+      null,
+      { timeout: 15_000 }
+    );
+
+    // Allowlisting the site must lift the filter on the page already open.
+    await page.click("#allowlist-toggle");
+    await page.waitForFunction(
+      () => document.getElementById("allowlist-toggle")?.textContent?.includes("Remove"),
+      null,
+      { timeout: 15_000 }
+    );
+    await sitePage.waitForFunction(
+      () => getComputedStyle(document.querySelector("#div-gpt-ad-banner")).display !== "none",
+      null,
+      { timeout: 15_000 }
+    );
+    const allowed = await readAds();
+    assert.strictEqual(allowed.injected, false, "the stylesheet must be removed when the site is allowlisted");
+    assert.notStrictEqual(allowed.inline, "none", "the AdSense placeholder must show again");
+
+    // Removing the site from the allowlist brings the filter back, no reload.
+    await page.click("#allowlist-toggle");
+    await page.waitForFunction(
+      () => document.getElementById("allowlist-toggle")?.textContent?.includes("Allowlist"),
+      null,
+      { timeout: 15_000 }
+    );
+    await sitePage.waitForFunction(
+      () => getComputedStyle(document.querySelector("#div-gpt-ad-banner")).display === "none",
+      null,
+      { timeout: 15_000 }
+    );
+    assert.strictEqual((await readAds()).injected, true, "the stylesheet must come back when the site is no longer allowlisted");
+
+    // Turning WebGuard off does the same, and turning it back on hides them again.
+    await page.uncheck("#blocking-toggle");
+    await page.waitForFunction(
+      () => document.getElementById("ads-status")?.textContent?.includes("Blocking is off"),
+      null,
+      { timeout: 15_000 }
+    );
+    await sitePage.waitForFunction(
+      () => document.getElementById("webguard-cosmetic-filter") === null,
+      null,
+      { timeout: 15_000 }
+    );
+    assert.notStrictEqual((await readAds()).banner, "none", "WebGuard off must lift the cosmetic filter");
+
+    await page.check("#blocking-toggle");
+    await page.waitForFunction(
+      () => document.getElementById("ads-status")?.textContent?.includes("Blocking is on"),
+      null,
+      { timeout: 15_000 }
+    );
+    await sitePage.waitForFunction(
+      () => getComputedStyle(document.querySelector("#div-gpt-ad-banner")).display === "none",
+      null,
+      { timeout: 15_000 }
+    );
+    assert.strictEqual((await readAds()).injected, true, "WebGuard on must restore the cosmetic filter");
+    await page.close();
   });
 
   it("really stops blocking when turned off, and resumes when turned back on", async () => {

@@ -21,7 +21,7 @@ press **Load unpacked**, and pick this folder.
 | **Cookies** | Every cookie for the current site: name, domain, expiry, Secure, HttpOnly, SameSite, and first- versus third-party. Cookie **values are never read, stored or displayed**. |
 | **Permissions** | Camera, microphone, geolocation and notification states (granted / denied / prompt / unavailable), plus clearly-labelled heuristic alerts and a "mark as expected" control. |
 | **Domain info** | Hostname and HTTPS status, plus registry data (registrar, registration date, "registered less than 30 days ago") fetched over RDAP **only when you press the button**. |
-| **Ads & trackers** | 25,000 host-level blocking rules built from EasyList and EasyPrivacy, a global on/off switch, a per-site allowlist, blocked counts per tab and per day, and a top-blocked-hosts list. |
+| **Ads & trackers** | 25,000 host-level blocking rules built from EasyList and EasyPrivacy, cosmetic filtering that hides standard ad slots and blocked ad frames (so no empty boxes are left behind), a global on/off switch, a per-site allowlist, blocked counts per tab and per day, and a top-blocked-hosts list. |
 | **Suspicious** | One explainable 0–100 score from local URL checks, an offline phishing blocklist and the RDAP new-domain flag. Every point is listed with its reason. |
 | **Breach & OSINT** | Offline matching against Have I Been Pwned breach data, with plain-language flags and links so you can check your own email. |
 | **History** | Hostnames and timestamps only, kept for 48 hours by default (adjustable 1–7 days), with pause and clear controls. Incognito tabs are skipped. |
@@ -45,7 +45,9 @@ press **Load unpacked**, and pick this folder.
 
 Chrome will warn that the extension can "read and change all your data on all websites". In practice
 WebGuard **does not** read page content, form data, passwords or cookie values. It reads cookie
-metadata, counts blocked requests and reads permission states.
+metadata, counts blocked requests and reads permission states. Cosmetic filtering adds one
+stylesheet rule that hides a fixed list of advertising selectors; it never reads or edits the page's
+own content, and the rule is removed while WebGuard is off or the site is allowlisted.
 
 ---
 

@@ -26,9 +26,19 @@ test("keeps a strict extension-page CSP", () => {
     "script-src 'self'; object-src 'self'; base-uri 'self';");
 });
 
-test("registers the isolated content script for supported web pages", () => {
-  assert.deepEqual(manifest.content_scripts, [{
-    matches: ["<all_urls>"], js: ["content/content-script.js"], run_at: "document_idle"
+test("registers the isolated content scripts for supported web pages", () => {
+  assert.deepEqual(manifest.content_scripts, [
+    { matches: ["<all_urls>"], js: ["content/cosmetic-filter.js"], run_at: "document_start" },
+    { matches: ["<all_urls>"], js: ["content/content-script.js"], run_at: "document_idle" }
+  ]);
+});
+
+test("exposes only the cosmetic filter rules to the page's content script", () => {
+  // The content script imports these modules, so Chrome only hands them over if
+  // they are declared; nothing else may become reachable from a page.
+  assert.deepEqual(manifest.web_accessible_resources, [{
+    resources: ["lib/cosmetic-rules.mjs", "lib/host-match.mjs"],
+    matches: ["<all_urls>"]
   }]);
 });
 
