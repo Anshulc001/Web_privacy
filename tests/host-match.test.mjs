@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { normalizeHost, isPublicSuffix, candidateHosts, matchHostInRecord } from "../lib/host-match.mjs";
+import { normalizeHost, isPublicSuffix, candidateHosts, matchHostInRecord, toggleAllowlistEntry, registrableDomain, hostCoveredBy } from "../lib/host-match.mjs";
 
 describe("normalizeHost", () => {
   it("lowercases and strips a trailing dot", () => {
@@ -55,6 +55,23 @@ describe("candidateHosts", () => {
   });
 });
 
+describe("toggleAllowlistEntry", () => {
+  it("adds a host once and keeps the list sorted", () => {
+    assert.deepStrictEqual(toggleAllowlistEntry(["z.example"], "a.example", true), ["a.example", "z.example"]);
+    assert.deepStrictEqual(toggleAllowlistEntry(["example.com"], "example.com", true), ["example.com"]);
+  });
+
+  it("removes the entry that covers the host through its registrable domain", () => {
+    assert.deepStrictEqual(toggleAllowlistEntry(["example.com", "unrelated.net"], "www.example.com", false), ["unrelated.net"]);
+    assert.deepStrictEqual(toggleAllowlistEntry(["www.example.com"], "www.example.com", false), []);
+  });
+
+  it("keeps unrelated entries and tolerates an invalid host", () => {
+    assert.deepStrictEqual(toggleAllowlistEntry(["other.test"], "not a host", false), ["other.test"]);
+    assert.deepStrictEqual(toggleAllowlistEntry(["other.test"], "not a host", true), ["other.test"]);
+  });
+});
+
 describe("matchHostInRecord", () => {
   const record = { "example.com": "parent", "mail.example.com": "exact", "com": "should-never-win" };
 
@@ -73,5 +90,38 @@ describe("matchHostInRecord", () => {
   it("returns null for a missing record or invalid host", () => {
     assert.strictEqual(matchHostInRecord("example.com", null), null);
     assert.strictEqual(matchHostInRecord("invalid host", record), null);
+  });
+});
+
+describe("registrableDomain", () => {
+  it("returns the shortest non-suffix candidate", () => {
+    assert.strictEqual(registrableDomain("edition.cnn.com"), "cnn.com");
+    assert.strictEqual(registrableDomain("news.bbc.co.uk"), "bbc.co.uk");
+    assert.strictEqual(registrableDomain("a.b.example.com"), "example.com");
+  });
+
+  it("has no answer for addresses and names with no registry", () => {
+    for (const value of ["192.168.0.1", "com", "co.uk", "printer.local", "example.test", "not a host", null]) {
+      assert.strictEqual(registrableDomain(value), null, `expected null for ${JSON.stringify(value)}`);
+    }
+  });
+});
+
+describe("hostCoveredBy", () => {
+  it("matches the exact host and its registrable domain", () => {
+    assert.strictEqual(hostCoveredBy("www.example.com", ["example.com"]), true);
+    assert.strictEqual(hostCoveredBy("example.com", ["www.example.com"]), true);
+    assert.strictEqual(hostCoveredBy("mail.example.com", ["example.com"]), true);
+  });
+
+  it("does not cover a sibling domain or a lookalike suffix", () => {
+    assert.strictEqual(hostCoveredBy("example.net", ["example.com"]), false);
+    assert.strictEqual(hostCoveredBy("notexample.com", ["example.com"]), false);
+  });
+
+  it("ignores invalid input and invalid entries", () => {
+    assert.strictEqual(hostCoveredBy("example.com", ["bad host", 42, null]), false);
+    assert.strictEqual(hostCoveredBy("bad host", ["example.com"]), false);
+    assert.strictEqual(hostCoveredBy("example.com", null), false);
   });
 });

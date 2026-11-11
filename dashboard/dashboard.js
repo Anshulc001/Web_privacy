@@ -351,9 +351,12 @@ function renderCharts() {
   if (!overview) return;
   const site = state.target ? state.site : null;
   const days = site ? site.blocking?.days ?? {} : browserDays();
+  const perDay = overview.blocking.series.map((day) => ({ label: day.date.slice(5), value: Number.isFinite(days[day.date]) ? days[day.date] : 0 }));
+  // An all-zero week used to draw an empty axis with a lone "1" tick, which reads
+  // as a broken chart; the other chart already says "No data yet" for this case.
   renderBarChart(
     el("chart-blocked"),
-    overview.blocking.series.map((day) => ({ label: day.date.slice(5), value: Number.isFinite(days[day.date]) ? days[day.date] : 0 })),
+    perDay.some((item) => item.value > 0) ? perDay : [],
     "Blocked requests per day"
   );
   renderRankedBars(
@@ -509,11 +512,50 @@ async function loadBlockedForSite() {
   sourceEl.textContent = "By website and by tracker source, for the selected time frame; both lists add up to the number above. Not a full request log, and page URLs are never stored.";
 }
 
+/**
+ * A selected site whose report could not be read must not keep the previous
+ * site's rows on screen: the panels stay visible (the picker still names a site)
+ * but every one of them says the data is unavailable.
+ */
+function showSiteUnavailable(reason) {
+  state.site = null;
+  el("target-summary").textContent = reason;
+  el("cookies-status").textContent = "Cookie details are unavailable right now.";
+  clear(el("cookies-list"));
+  el("clear-site-cookies").disabled = true;
+  const permissionsList = el("permissions-list");
+  clear(permissionsList);
+  permissionsList.textContent = "Permission details are unavailable right now.";
+  el("permissions-status").textContent = "";
+  el("allowlist-status").textContent = "Allowlist state is unavailable right now.";
+  el("allowlist-toggle").disabled = true;
+  el("domain-summary").textContent = "Domain information is unavailable right now.";
+  clear(el("domain-details"));
+  el("rdap-lookup").disabled = true;
+  el("risk-summary").textContent = "Risk details are unavailable right now.";
+  clear(el("risk-reasons"));
+  el("risk-disclaimer").textContent = "";
+  el("breach-summary").textContent = "Breach details are unavailable right now.";
+  clear(el("breach-list"));
+  clear(el("breach-attribution"));
+}
+
 async function loadSite(hostname) {
-  const report = await send({ type: "webguard.siteReport", hostname });
+  let report = null;
+  try {
+    report = await send({ type: "webguard.siteReport", hostname });
+  } catch (error) {
+    if (state.target === hostname) {
+      showSiteUnavailable("Site details are unavailable.");
+      console.error("WebGuard could not load a site report.", error);
+    }
+    return;
+  }
+  // A fast picker change starts a second load; the older answer must not paint
+  // over the site the reader is looking at now.
+  if (state.target !== hostname) return;
   if (!report || report.status !== "ok") {
-    state.site = null;
-    el("target-summary").textContent = report?.reason ?? "Site details are unavailable.";
+    showSiteUnavailable(report?.reason ?? "Site details are unavailable.");
     return;
   }
   state.site = report;
@@ -534,11 +576,11 @@ async function loadSite(hostname) {
     cookiesList.textContent = "";
   } else {
     const list = cookies.cookies ?? [];
-    el("cookies-status").textContent = list.length === 0 ? "No cookies detected for this site." : `${list.length} cookie(s).`;
-    if (list.length > 0) {
-      for (const cookie of list) {
-        cookiesList.append(listItem(`${cookie.name} — ${cookie.domain}; ${cookie.party}; expires: ${cookie.expiry}; Secure: ${cookie.secure}; HttpOnly: ${cookie.httpOnly}; SameSite: ${cookie.sameSite}`));
-      }
+    el("cookies-status").textContent = list.length === 0
+      ? "No cookies detected for this site."
+      : `${list.length} cookie${list.length === 1 ? "" : "s"}.`;
+    for (const cookie of list) {
+      cookiesList.append(listItem(`${cookie.name} — ${cookie.domain}; ${cookie.party}; ${cookieExpiry(cookie.expiry)}; Secure: ${cookie.secure}; HttpOnly: ${cookie.httpOnly}; SameSite: ${cookie.sameSite}`));
     }
   }
 
@@ -607,8 +649,8 @@ function renderSitePermissions(permissions, permissionSettings) {
     return;
   }
   for (const name of permissionNames) {
-    const state = permissions[name];
-    const label = state === "unavailable" ? "Chrome did not report a state" : (PERMISSION_STATE_LABELS[state] ?? "not given");
+    const permissionState = permissions[name];
+    const label = permissionState === "unavailable" ? "Chrome did not report a state" : (PERMISSION_STATE_LABELS[permissionState] ?? "not given");
     const row = document.createElement("li");
     row.className = "permission-row";
     row.append(text("span", `${permissionLabel(name)}: ${label}`));
@@ -668,6 +710,13 @@ async function refreshSitePermissions() {
 function startPermissionPolling() {
   clearInterval(permissionTimer);
   permissionTimer = window.setInterval(() => { void refreshSitePermissions(); }, 5_000);
+}
+
+/** "expires Session" or a plain date; the time of day is never useful here. */
+function cookieExpiry(expiry) {
+  if (expiry === "Session") return "removed when the browser closes";
+  const parsed = Date.parse(String(expiry));
+  return Number.isFinite(parsed) ? `kept until ${new Date(parsed).toISOString().slice(0, 10)}` : "expiry unknown";
 }
 
 /** A registry timestamp as a plain date; the time of day is never useful here. */
@@ -786,15 +835,22 @@ async function savePermission(permission, select) {
   if (!host) return;
   const setting = select.value;
   select.disabled = true;
-  const result = await send({ type: "webguard.setPermission", hostname: host, permission, setting });
+  let result = null;
+  try {
+    result = await send({ type: "webguard.setPermission", hostname: host, permission, setting });
+  } catch (error) {
+    result = { status: "unavailable", reason: "That permission could not be changed." };
+    console.error("WebGuard could not change a site permission.", error);
+  }
   // A scope change during the save must not write feedback about another site.
   if (state.target !== host) return;
   select.disabled = false;
-  if (result?.status === "ok") await loadSite(host);
   if (result?.status !== "ok") {
     el("permissions-status").textContent = result?.reason ?? "That permission could not be changed.";
     return;
   }
+  await loadSite(host);
+  if (state.target !== host) return;
   // "Ask" withdraws WebGuard's rule, so Chrome's own value (which may already
   // be Allow from the reader answering the prompt) takes over again.
   el("permissions-status").textContent = setting === "ask"
@@ -870,33 +926,60 @@ el("blocking-toggle").addEventListener("change", async (event) => {
     await send({ type: "webguard.updateSettings", patch: { blockingEnabled: event.target.checked } });
     await loadOverview();
     await applyScope();
+  } catch (error) {
+    el("ads-status").textContent = "The blocking switch could not be saved.";
+    console.error("WebGuard could not change blocking.", error);
   } finally {
     blockingToggleBusy = false;
   }
 });
 
 el("history-paused").addEventListener("change", async (event) => {
-  await send({ type: "webguard.updateSettings", patch: { historyPaused: event.target.checked } });
-  await loadOverview();
+  try {
+    await send({ type: "webguard.updateSettings", patch: { historyPaused: event.target.checked } });
+    await loadOverview();
+  } catch (error) {
+    el("settings-feedback").textContent = "The visit-recording setting could not be saved.";
+    console.error("WebGuard could not change visit recording.", error);
+  }
 });
 
 el("retention-select").addEventListener("change", async (event) => {
-  await send({ type: "webguard.updateSettings", patch: { historyRetentionHours: Number(event.target.value) } });
-  await loadOverview();
+  try {
+    await send({ type: "webguard.updateSettings", patch: { historyRetentionHours: Number(event.target.value) } });
+    await loadOverview();
+  } catch (error) {
+    el("settings-feedback").textContent = "The retention setting could not be saved.";
+    console.error("WebGuard could not change retention.", error);
+  }
 });
 
 el("auto-lookup").addEventListener("change", async (event) => {
-  await send({ type: "webguard.updateSettings", patch: { autoDomainLookup: event.target.checked } });
-  await loadOverview();
-  await applyScope();
+  try {
+    await send({ type: "webguard.updateSettings", patch: { autoDomainLookup: event.target.checked } });
+    await loadOverview();
+    await applyScope();
+  } catch (error) {
+    el("settings-feedback").textContent = "The registry lookup setting could not be saved.";
+    console.error("WebGuard could not change the registry lookup setting.", error);
+  }
 });
 
 el("allowlist-toggle").addEventListener("click", async () => {
   if (!state.target) return;
-  const allowlisted = !(state.overview?.blocking.allowlist ?? []).includes(state.target);
-  await send({ type: "webguard.toggleAllowlist", hostname: state.target, allowlisted });
-  await loadOverview();
-  await applyScope();
+  const host = state.target;
+  // The site report says "allowlisted" when a registrable-domain entry covers
+  // this host, so that is what decides removal: the exact list may hold a parent
+  // ("example.com") for the site being viewed ("www.example.com").
+  const covered = state.site?.allowlisted ?? (state.overview?.blocking.allowlist ?? []).includes(host);
+  try {
+    await send({ type: "webguard.toggleAllowlist", hostname: host, allowlisted: !covered });
+    await loadOverview();
+    await applyScope();
+  } catch (error) {
+    el("allowlist-status").textContent = "That allowlist change could not be saved.";
+    console.error("WebGuard could not change the allowlist.", error);
+  }
 });
 
 el("expand-blocked").addEventListener("click", () => {
@@ -911,15 +994,11 @@ el("expand-blocked").addEventListener("click", () => {
 el("frame-select").addEventListener("change", async (event) => {
   state.frame = event.target.value;
   // The frame decides which sites exist for the reader, so the picker is rebuilt
-  // before the panels: a site outside the frame is no longer offered.
+  // before the panels. applyScope covers both cases: when the frame drops the
+  // selected site it hides the site-only panels instead of leaving that site's
+  // cookies and permissions on screen under a new frame.
   fillTargetSelect();
-  if (state.target) {
-    await applyScope();
-  } else {
-    renderKpis();
-    renderCharts();
-    await loadBlockedForSite();
-  }
+  await applyScope();
 });
 
 el("rdap-lookup").addEventListener("click", () => {
@@ -928,29 +1007,79 @@ el("rdap-lookup").addEventListener("click", () => {
 });
 
 el("clear-site-cookies").addEventListener("click", async () => {
-  if (!state.target) return;
-  el("clear-site-cookies").disabled = true;
-  const result = await send({ type: "webguard.clearSiteCookies", hostname: state.target });
+  const host = state.target;
+  const button = el("clear-site-cookies");
+  if (!host || button.disabled) return;
+  button.disabled = true;
+  let message;
+  try {
+    const result = await send({ type: "webguard.clearSiteCookies", hostname: host });
+    message = result?.ok
+      ? `Cleared ${result.removed} cookie${result.removed === 1 ? "" : "s"} for this site.`
+      : (result?.reason ?? "Cookies could not be cleared.");
+  } catch (error) {
+    message = "Cookies could not be cleared.";
+    console.error("WebGuard could not clear site cookies.", error);
+  }
+  // A scope change while the clear was in flight must not report on another site.
+  if (state.target !== host) return;
   // Re-read the site so the cookie list, the count and the button all agree with
   // the browser; the confirmation is then written over the refreshed status.
-  await loadSite(state.target);
-  el("cookies-status").textContent = result?.ok
-    ? `Cleared ${result.removed} cookie${result.removed === 1 ? "" : "s"} for this site.`
-    : (result?.reason ?? "Cookies could not be cleared.");
+  await loadSite(host);
+  if (state.target === host) el("cookies-status").textContent = message;
 });
 
+// Clearing installs (or removes) ~25,000 dynamic rules, which takes seconds. The
+// button said nothing while it worked, so it looked like the click was lost.
 el("clear-history").addEventListener("click", async () => {
-  await send({ type: "webguard.clearHistory" });
-  el("settings-feedback").textContent = "Visit records cleared.";
-  await loadOverview();
-  await applyScope();
+  const button = el("clear-history");
+  if (button.disabled) return;
+  button.disabled = true;
+  el("settings-feedback").textContent = "Clearing visit records…";
+  let feedback;
+  try {
+    await send({ type: "webguard.clearHistory" });
+    feedback = "Visit records cleared.";
+  } catch (error) {
+    feedback = "Visit records could not be cleared.";
+    console.error("WebGuard could not clear visit records.", error);
+  } finally {
+    button.disabled = false;
+  }
+  el("settings-feedback").textContent = feedback;
+  try {
+    await loadOverview();
+    await applyScope();
+  } catch {
+    // The feedback above already says whether the clear worked.
+  }
 });
 
 el("clear-all").addEventListener("click", async () => {
-  await send({ type: "webguard.clearAllData" });
-  el("settings-feedback").textContent = "All WebGuard data cleared.";
-  await loadOverview();
-  await applyScope();
+  const button = el("clear-all");
+  const historyButton = el("clear-history");
+  if (button.disabled) return;
+  button.disabled = true;
+  historyButton.disabled = true;
+  el("settings-feedback").textContent = "Clearing all WebGuard data…";
+  let feedback;
+  try {
+    await send({ type: "webguard.clearAllData" });
+    feedback = "All WebGuard data cleared.";
+  } catch (error) {
+    feedback = "WebGuard data could not be cleared.";
+    console.error("WebGuard could not clear all data.", error);
+  } finally {
+    button.disabled = false;
+    historyButton.disabled = false;
+  }
+  el("settings-feedback").textContent = feedback;
+  try {
+    await loadOverview();
+    await applyScope();
+  } catch {
+    // The feedback above already says whether the clear worked.
+  }
 });
 
 // Counts, history and settings change while the dashboard is open, so it has to

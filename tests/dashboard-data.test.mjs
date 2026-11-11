@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
+  dayKey,
+  todayKey,
   groupHistoryByDay,
   blockingSeries,
   topBlockedHosts,
@@ -129,5 +131,14 @@ describe("sparklinePath", () => {
     assert.ok(path.startsWith("M0,50"));
     assert.ok(path.includes("L100,0"));
     assert.strictEqual(sparklinePath([], {}), "");
+  });
+});
+
+describe("dayKey", () => {
+  it("formats a UTC calendar day and pads single digits", () => {
+    assert.strictEqual(dayKey(Date.parse("2026-01-02T23:59:59Z")), "2026-01-02");
+    assert.strictEqual(todayKey(Date.parse("2026-10-25T12:00:00Z")), "2026-10-25");
+    // The default argument is the machine clock, which is what the worker uses.
+    assert.strictEqual(todayKey(), new Date().toISOString().slice(0, 10));
   });
 });

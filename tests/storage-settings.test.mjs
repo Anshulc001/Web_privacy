@@ -75,3 +75,11 @@ test("does not lose a setting when two updates overlap", async () => {
 test("uses one HTTPS data URL base", () => {
   assert.equal(DATA_URL_BASE, "https://raw.githubusercontent.com/Anshulc001/Web_privacy/main/data/");
 });
+
+test("the default allowlist cannot be mutated through a fallback", () => {
+  assert.equal(Object.isFrozen(DEFAULT_SETTINGS.siteAllowlist), true);
+  const fallback = normalizeSettings("not a settings object");
+  assert.equal(Object.isFrozen(fallback.siteAllowlist), true, "invalid input returns the frozen default");
+  assert.throws(() => fallback.siteAllowlist.push("evil.test"), TypeError);
+  assert.deepEqual(DEFAULT_SETTINGS.siteAllowlist, [], "the defaults must stay empty");
+});

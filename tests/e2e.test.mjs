@@ -785,6 +785,23 @@ describe("WebGuard end to end", () => {
       await frameIs("yesterday.example", true);
       assert.strictEqual(await page.locator("#target-select option").first().innerText(), "All sites", "the picker keeps an all-sites entry");
       assert.ok((await values()).every((value) => !/https?:\/\//.test(value)), "the picker must never show full URLs");
+
+      // A site picked in one frame must not keep its panels when the frame
+      // picker no longer offers it: the page has to fall back to all-sites mode
+      // instead of showing the previous site's cookies under a new frame.
+      await page.selectOption("#frame-select", "yesterday");
+      await frameIs("yesterday.example", true);
+      await page.selectOption("#target-select", "yesterday.example");
+      await page.waitForFunction(
+        () => document.getElementById("target-summary")?.textContent?.startsWith("yesterday.example"),
+        null,
+        { timeout: 15_000 }
+      );
+      assert.strictEqual(await page.locator("#cookies").isVisible(), true, "selecting a framed site shows its panels");
+      await page.selectOption("#frame-select", "today");
+      await page.waitForFunction(() => document.getElementById("target-select")?.value === "", null, { timeout: 15_000 });
+      assert.strictEqual(await page.locator("#cookies").isVisible(), false, "a site outside the frame must hide its panels");
+      assert.match(await page.locator("#target-summary").innerText(), /all sites/i, "the summary must return to all sites");
     } finally {
       await page.evaluate(async (previous) => {
         if (previous === null) await chrome.storage.local.remove("historyEvents");

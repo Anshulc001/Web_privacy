@@ -70,9 +70,12 @@ describe("live dashboard in Chrome", () => {
         assert.strictEqual(await page.locator(`#${id}`).isVisible(), false, `section #${id} is site-only`);
       }
 
-      // Charts must be real SVG built without a chart library.
-      const svgCount = await page.locator(".chart svg").count();
-      assert.ok(svgCount >= 1, `expected at least one rendered SVG chart, found ${svgCount}`);
+      // A fresh profile has nothing to plot, so both charts must say so rather than
+      // draw an empty axis with a lone "1" tick. The populated charts (real SVG,
+      // built without a chart library) are covered by the seeded e2e dashboard.
+      const emptyCharts = await page.locator(".chart .empty").allInnerTexts();
+      assert.deepStrictEqual(emptyCharts.map((entry) => entry.trim()), ["No data yet.", "No data yet."]);
+      assert.strictEqual(await page.locator(".chart svg").count(), 0, "no chart is drawn before any data exists");
 
       // Data freshness is one compact line in Settings.
       const syncStatus = await page.locator("#sync-status").innerText();

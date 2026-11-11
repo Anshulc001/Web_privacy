@@ -1,13 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  canEditSitePermission,
   contentSettingTypes,
   ensurePermissionRulesVersion,
   loadPermissionOverrides,
+  normalizePermissionOverrides,
   PERMISSION_OVERRIDES_KEY,
   PERMISSION_RULES_VERSION,
   PERMISSION_RULES_VERSION_KEY,
   readSitePermissionSettings,
+  resetExtensionPermissionRules,
   resolveContentSettingType,
   setSitePermission,
   SITE_PERMISSION_SETTINGS
@@ -271,5 +274,43 @@ describe("ensurePermissionRulesVersion", () => {
       ["camera", "clipboard", "location", "microphone", "notifications"]
     );
     assert.deepEqual(storage.data[PERMISSION_OVERRIDES_KEY], {});
+  });
+});
+
+describe("normalizePermissionOverrides", () => {
+  it("keeps only allow/block rules with a valid hostname and a type-shaped key", () => {
+    assert.deepEqual(normalizePermissionOverrides(null), {});
+    assert.deepEqual(normalizePermissionOverrides([]), {});
+    assert.deepEqual(normalizePermissionOverrides({ camera: "allow" }), {});
+    assert.deepEqual(normalizePermissionOverrides({
+      camera: { "Good.Example": "allow", "bad host": "allow", "ask.example": "ask" },
+      "bad type": { "example.com": "allow" },
+      "": { "example.com": "allow" }
+    }), { camera: { "good.example": "allow" } });
+  });
+});
+
+describe("canEditSitePermission", () => {
+  it("follows the types Chrome exposes, not a shipped permission list", () => {
+    const api = fakeApi();
+    assert.equal(canEditSitePermission(api, "camera"), true);
+    assert.equal(canEditSitePermission(api, "clipboard-read"), true);
+    assert.equal(canEditSitePermission(api, "fullscreen"), false);
+    assert.equal(canEditSitePermission(api, "pointer-lock"), false);
+    assert.equal(canEditSitePermission(api, "persistent-storage"), false);
+    assert.equal(canEditSitePermission(null, "camera"), false);
+  });
+});
+
+describe("resetExtensionPermissionRules", () => {
+  it("clears only the legacy and tracked types this Chrome exposes", async () => {
+    const api = fakeApi(["camera", "notifications", "clipboard"]);
+    const storage = fakeStorage({
+      [PERMISSION_OVERRIDES_KEY]: { clipboard: { "example.com": "allow" }, ghost: { "example.com": "allow" } }
+    });
+    assert.equal(await resetExtensionPermissionRules(api, storage), true);
+    assert.deepEqual(api.calls.map((call) => call.type).sort(), ["camera", "clipboard", "notifications"]);
+    assert.deepEqual(storage.data[PERMISSION_OVERRIDES_KEY], {});
+    assert.equal(storage.data[PERMISSION_RULES_VERSION_KEY], PERMISSION_RULES_VERSION);
   });
 });

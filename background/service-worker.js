@@ -20,6 +20,7 @@ import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs"
 import { TRACKING_PARAM_RULE_ID } from "../lib/tracking-params.mjs";
 import { inspectUrl } from "../lib/url-checks.mjs";
 import { createHistoryStore, createNavigationRecorder, hostnameFromUrl } from "./history-store.mjs";
+import { hostCoveredBy, toggleAllowlistEntry } from "../lib/host-match.mjs";
 import { createObservationStore, validatePermissionRequest, validateSiteObservation } from "./messages.mjs";
 import { ensurePermissionRulesVersion, setSitePermission } from "./permission-settings.mjs";
 import { probeTabPermissionStates } from "./site-probe.mjs";
@@ -224,7 +225,9 @@ async function currentSitePrivacy(tabId) {
     permissionStatesAvailable: reported.length > 0,
     blocking: await blockingCounter.summary(tabId),
     blockingEnabled: settings.blockingEnabled,
-    allowlisted: settings.siteAllowlist.includes(hostname),
+    // Matches the DNR allow rules (host plus registrable domain), so the popup and
+    // the dashboard agree with what blocking actually does for this site.
+    allowlisted: hostCoveredBy(hostname, settings.siteAllowlist),
     // Sent with the site details so the popup does not need a second round-trip.
     breach: { hostname, ...checkHostForBreaches(hostname, stored?.[BREACH_DATA_KEY]) }
   };
@@ -332,9 +335,11 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
   if (message.type === "webguard.setAllowlist") return blockingManager.setAllowlist(message.hosts);
   if (message.type === "webguard.toggleAllowlist") {
     const settings = await settingsStore.load();
-    const hosts = new Set(settings.siteAllowlist);
-    if (message.allowlisted) hosts.add(message.hostname); else hosts.delete(message.hostname);
-    return blockingManager.setAllowlist([...hosts]);
+    // Removal drops the registrable-domain entry that covers this host too, so the
+    // button that says "Remove from allowlist" cannot silently do nothing.
+    return blockingManager.setAllowlist(
+      toggleAllowlistEntry(settings.siteAllowlist, message.hostname, message.allowlisted === true)
+    );
   }
   if (message.type === "webguard.blockingSummary") return blockingCounter.summary(message.tabId ?? undefined);
   if (message.type === "webguard.breachInfo") return breachInfo(message.tabId);

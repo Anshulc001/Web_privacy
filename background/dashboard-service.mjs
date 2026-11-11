@@ -1,6 +1,7 @@
 import { BLOCKING_COUNTS_KEY } from "./blocking-counter.mjs";
 import { BLOCKING_DATA_KEY, LAST_SYNC_KEY } from "./data-sync.mjs";
 import { normalizeHostname, hostnameFromUrl } from "./history-store.mjs";
+import { hostCoveredBy } from "../lib/host-match.mjs";
 import { BREACH_DATA_KEY, checkHostForBreaches } from "../lib/breach-checker.mjs";
 import { clearCookiesForHost } from "../lib/cookie-insights.mjs";
 import { inspectSiteCookies } from "../lib/cookie-inspector.mjs";
@@ -136,6 +137,9 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         } catch {
           return { status: "unavailable", reason: "That tab is no longer available." };
         }
+        // Chrome rejects for a closed tab, but an API that resolves an empty
+        // result must not fall through to the generic hostname error.
+        if (!host) return { status: "unavailable", reason: "That tab is no longer available." };
       }
       if (!host) return { status: "unavailable", reason: "A hostname is required." };
 
@@ -179,7 +183,10 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         threat,
         breach,
         domainInfo,
-        allowlisted: settings.siteAllowlist.includes(host)
+        // The DNR allow rules cover the exact host and its registrable domain, so
+        // the panel must use the same test; an exact match said "not allowlisted"
+        // for a sibling subdomain whose blocking was already skipped.
+        allowlisted: hostCoveredBy(host, settings.siteAllowlist)
       };
     },
 

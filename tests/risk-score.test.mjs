@@ -83,4 +83,10 @@ describe("scoreRisk", () => {
     const result = scoreRisk({ urlFindings: [null, { id: "x" }, { id: "y", weight: "lots", label: "y" }] });
     assert.strictEqual(result.score, 0);
   });
+
+  it("treats a null findings list as no local findings", () => {
+    const result = scoreRisk({ urlFindings: null });
+    assert.strictEqual(result.score, 0);
+    assert.strictEqual(result.reasons[0].id, "no-findings");
+  });
 });

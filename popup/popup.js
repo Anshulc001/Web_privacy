@@ -318,16 +318,44 @@ clearCookies.addEventListener("click", async () => {
   }, 4_000);
 });
 
-blockingToggle.addEventListener("click", async () => {
-  if (!current) return;
-  await chrome.runtime.sendMessage({ type: "webguard.setBlockingEnabled", enabled: !current.blockingEnabled });
+/**
+ * Runs one site-level switch, then always re-reads the page: the popup must not
+ * keep a button enabled (or show an old label) when the worker call fails.
+ */
+async function runSiteToggle(button, action, failureMessage) {
+  if (!current || button.disabled) return;
+  button.disabled = true;
+  let failed = false;
+  try {
+    await action();
+  } catch (error) {
+    failed = true;
+    console.error(`WebGuard popup: ${failureMessage}`, error);
+  }
   await loadCurrentSite();
+  if (failed) status.textContent = failureMessage;
+  button.disabled = false;
+}
+
+blockingToggle.addEventListener("click", () => {
+  if (!current) return;
+  const enabled = !current.blockingEnabled;
+  void runSiteToggle(
+    blockingToggle,
+    () => chrome.runtime.sendMessage({ type: "webguard.setBlockingEnabled", enabled }),
+    "WebGuard could not be switched. Try again."
+  );
 });
 
-allowlistToggle.addEventListener("click", async () => {
+allowlistToggle.addEventListener("click", () => {
   if (!current) return;
-  await chrome.runtime.sendMessage({ type: "webguard.toggleAllowlist", hostname: current.hostname, allowlisted: !current.allowlisted });
-  await loadCurrentSite();
+  const hostname = current.hostname;
+  const allowlisted = !current.allowlisted;
+  void runSiteToggle(
+    allowlistToggle,
+    () => chrome.runtime.sendMessage({ type: "webguard.toggleAllowlist", hostname, allowlisted }),
+    "The allowlist could not be changed. Try again."
+  );
 });
 
 document.getElementById("open-dashboard").addEventListener("click", () => {

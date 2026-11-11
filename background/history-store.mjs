@@ -86,36 +86,57 @@ export function createHistoryStore(storageArea, now = () => Date.now()) {
     }
   }
 
+  // Two navigations can commit close together, and every record is a
+  // read-modify-write of the same array: without this queue the slower write
+  // overwrote the faster one and a visited hostname disappeared. Prune and clear
+  // share the queue too, so a record already in flight cannot resurrect rows a
+  // clear just removed.
+  let pending = Promise.resolve();
+  function serialize(task) {
+    const result = pending.then(task, task);
+    pending = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  async function applyRecord(hostname, retentionHours, paused) {
+    const validHostname = normalizeHostname(hostname);
+    if (!validHostname) {
+      throw new TypeError("A valid hostname is required.");
+    }
+    if (typeof paused !== "boolean") {
+      throw new TypeError("The paused setting must be a boolean.");
+    }
+    const currentTime = now();
+    const retained = pruneHistory(await read(), currentTime, retentionHours);
+    const records = paused ? retained : [...retained, { hostname: validHostname, timestamp: currentTime }];
+    await write(records);
+    return { recorded: !paused, records };
+  }
+
+  async function applyPrune(retentionHours) {
+    const records = pruneHistory(await read(), now(), retentionHours);
+    await write(records);
+    return records;
+  }
+
   return {
     read,
-    async recordHostname(hostname, retentionHours, paused = false) {
-      const validHostname = normalizeHostname(hostname);
-      if (!validHostname) {
-        throw new TypeError("A valid hostname is required.");
-      }
-      if (typeof paused !== "boolean") {
-        throw new TypeError("The paused setting must be a boolean.");
-      }
-      const currentTime = now();
-      const retained = pruneHistory(await read(), currentTime, retentionHours);
-      const records = paused ? retained : [...retained, { hostname: validHostname, timestamp: currentTime }];
-      await write(records);
-      return { recorded: !paused, records };
+    recordHostname(hostname, retentionHours, paused = false) {
+      return serialize(() => applyRecord(hostname, retentionHours, paused));
     },
     async recordUrl(url, retentionHours, paused = false) {
       const hostname = hostnameFromUrl(url);
       if (!hostname) {
+        await pending;
         return { recorded: false, ignored: true, records: pruneHistory(await read(), now(), retentionHours) };
       }
-      return this.recordHostname(hostname, retentionHours, paused);
+      return serialize(() => applyRecord(hostname, retentionHours, paused));
     },
-    async prune(retentionHours) {
-      const records = pruneHistory(await read(), now(), retentionHours);
-      await write(records);
-      return records;
+    prune(retentionHours) {
+      return serialize(() => applyPrune(retentionHours));
     },
-    async clear() {
-      await write([]);
+    clear() {
+      return serialize(() => write([]));
     }
   };
 }

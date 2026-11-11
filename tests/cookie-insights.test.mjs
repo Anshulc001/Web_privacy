@@ -79,7 +79,7 @@ test("does not count a cookie that vanished before removal", async () => {
     },
     async remove(details) {
       if (details.name === "gone") throw new Error("No matching cookie");
-      this.removed += 1;
+      return { name: details.name };
     }
   };
   const result = await clearCookiesForHost(api, "example.com");
@@ -97,6 +97,19 @@ test("skips malformed cookie records and IP hosts without a registrable domain",
   const result = await clearCookiesForHost(api, "127.0.0.1");
   assert.equal(result.removed, 1);
   assert.equal(api.removed.length, 1);
+});
+
+test("does not count a removal Chrome reports as null", async () => {
+  const api = {
+    async getAll() {
+      return [{ name: "gone", domain: ".example.com", path: "/", secure: false, storeId: "0" }];
+    },
+    async remove() {
+      return null;
+    }
+  };
+  const result = await clearCookiesForHost(api, "example.com");
+  assert.equal(result.removed, 0);
 });
 
 test("rejects a missing cookies API or an invalid host", async () => {

@@ -56,3 +56,26 @@ test("surfaces an alarm API failure", async () => {
   }, { async prune() {} }, { async load() { return { historyRetentionHours: 48 }; } });
   await assert.rejects(manager.ensureHistoryPruneAlarm(), /alarms unavailable/);
 });
+
+test("still prunes history when blocking-count cleanup fails", async () => {
+  const alarms = createAlarms();
+  let historyPrunes = 0;
+  const manager = createAlarmManager(
+    alarms,
+    { async prune() { historyPrunes += 1; return [{ hostname: "keep.example", timestamp: 1 }]; } },
+    { async load() { return { historyRetentionHours: 48 }; } },
+    { async prune() { throw new Error("counter storage failed"); } }
+  );
+
+  const logged = [];
+  const originalError = console.error;
+  console.error = (...args) => logged.push(args);
+  try {
+    const records = await manager.pruneHistory();
+    assert.equal(historyPrunes, 1, "history cleanup must run even when the counter fails");
+    assert.deepEqual(records, [{ hostname: "keep.example", timestamp: 1 }]);
+    assert.equal(logged.length, 1, "the counter failure is reported, not hidden");
+  } finally {
+    console.error = originalError;
+  }
+});

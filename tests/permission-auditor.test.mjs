@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_REQUESTED_PERMISSIONS,
+  normalizePermissionName,
   normalizePermissionStates,
   normalizeRequestedPermissions
 } from "../background/permission-auditor.mjs";
@@ -34,4 +35,13 @@ test("accepts any well-formed permission name and drops everything else", () => 
 test("caps how many names a page can make the extension remember", () => {
   const many = Array.from({ length: MAX_REQUESTED_PERMISSIONS + 5 }, (_, index) => `permission-${index}`);
   assert.equal(normalizeRequestedPermissions(many).length, MAX_REQUESTED_PERMISSIONS);
+});
+
+test("validates one permission name by shape, not by a known list", () => {
+  assert.equal(normalizePermissionName("  Camera "), "camera");
+  assert.equal(normalizePermissionName("clipboard-read"), "clipboard-read");
+  assert.equal(normalizePermissionName("screen-wake-lock"), "screen-wake-lock");
+  for (const value of ["", "a", "-cam", "1cam", "bad name", "x".repeat(41), null, 42, {}]) {
+    assert.equal(normalizePermissionName(value), null, `expected null for ${JSON.stringify(value)}`);
+  }
 });
