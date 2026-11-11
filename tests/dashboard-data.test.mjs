@@ -2,8 +2,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
   groupHistoryByDay,
-  selectableDays,
-  eventsForDay,
   blockingSeries,
   topBlockedHosts,
   dataAgeDays,
@@ -33,22 +31,6 @@ describe("groupHistoryByDay", () => {
   it("ignores malformed events", () => {
     assert.deepStrictEqual(groupHistoryByDay([null, {}, { hostname: 5, timestamp: NOW }], 48, NOW), []);
     assert.deepStrictEqual(groupHistoryByDay("nope", 48, NOW), []);
-  });
-});
-
-describe("selectableDays", () => {
-  it("offers only days inside the retention window", () => {
-    assert.deepStrictEqual(selectableDays(48, NOW), ["2026-10-25", "2026-10-24"]);
-    assert.strictEqual(selectableDays(168, NOW).length, 7);
-  });
-});
-
-describe("eventsForDay", () => {
-  it("returns events for one date only and rejects bad dates", () => {
-    const events = [{ hostname: "a.example", timestamp: NOW - HOUR }];
-    assert.strictEqual(eventsForDay(events, "2026-10-25").length, 1);
-    assert.strictEqual(eventsForDay(events, "2026-10-01").length, 0);
-    assert.deepStrictEqual(eventsForDay(events, "yesterday"), []);
   });
 });
 

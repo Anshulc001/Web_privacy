@@ -9,10 +9,7 @@ test("counts only ERR_BLOCKED_BY_CLIENT requests by tab, day, and host", async (
   assert.deepEqual(await counter.summary(3), {
     tab: 1,
     today: 1,
-    topHosts: [["ads.test", 1]],
-    tabHosts: [{ host: "ads.test", count: 1 }],
-    sources: 1,
-    blockingDataLastSync: null
+    tabHosts: [{ host: "ads.test", count: 1 }]
   });
   assert.equal(isBlockedByClient({ error: "other", tabId: 3, url: "https://ads.test" }), false);
 });
@@ -34,7 +31,7 @@ test("counts concurrent blocked requests without losing writes", async () => {
   const summary = await counter.summary(3);
   assert.equal(summary.tab, 3, "every blocked request must be counted in the tab");
   assert.equal(summary.today, 3, "every blocked request must be counted for the day");
-  assert.deepEqual(summary.topHosts.map(([host]) => host).sort(), ["ads.test", "beacon.test", "tracker.test"]);
+  assert.deepEqual(summary.tabHosts.map((entry) => entry.host).sort(), ["ads.test", "beacon.test", "tracker.test"]);
 });
 
 test("attributes blocked requests to the page that made them", async () => {
@@ -59,18 +56,6 @@ test("attributes blocked requests to the page that made them", async () => {
   assert.strictEqual((await counter.summary(4)).today, 4, "the browser total still includes every request");
 });
 
-test("carries the last successful blocklist sync into the popup summary", async () => {
-  const storage = {
-    async get(key) {
-      if (key === "dataLastSync") return { dataLastSync: { blocking: { at: "2026-10-24T00:00:00.000Z", ok: true } } };
-      return {};
-    },
-    async set() {}
-  };
-  const counter = createBlockingCounter(storage, () => Date.parse("2026-10-25T12:00:00Z"));
-  assert.equal((await counter.summary(1)).blockingDataLastSync, "2026-10-24T00:00:00.000Z");
-});
-
 test("resets a tab's count on a new page but keeps the daily and host totals", async () => {
   const values = {};
   const counter = createBlockingCounter({
@@ -86,14 +71,14 @@ test("resets a tab's count on a new page but keeps the daily and host totals", a
   const after = await counter.summary(7);
   assert.equal(after.tab, 0, "per-tab count must restart for the new page");
   assert.equal(after.today, 2, "daily total must survive navigation");
-  assert.deepEqual(after.topHosts, [["ads.test", 1], ["track.test", 1]]);
+  assert.deepEqual(after.tabHosts, [], "the live per-page list starts empty for the new page");
 
   // The same blocked URL after a reload counts for the new page (popup) but not
   // again for the stored dashboard day/host/site buckets.
   await counter.record({ error: "net::ERR_BLOCKED_BY_CLIENT", tabId: 7, url: "https://ads.test/a" });
   assert.equal((await counter.summary(7)).tab, 1, "a reload starts a fresh live count");
   assert.equal((await counter.summary(7)).today, 2, "a reload must not double the stored day total");
-  assert.deepEqual((await counter.summary(7)).topHosts, [["ads.test", 1], ["track.test", 1]]);
+  assert.deepEqual((await counter.summary(7)).tabHosts, [{ host: "ads.test", count: 1 }], "only the new page's block is listed");
 });
 
 test("counts a retry storm once per page", async () => {
@@ -209,7 +194,6 @@ test("returns every source for the active tab so the popup list adds up", async 
   const summary = await counter.summary(5);
   assert.equal(summary.tab, 12);
   assert.equal(summary.tabHosts.length, 12, "no source may be truncated away");
-  assert.equal(summary.sources, 12);
   assert.equal(summary.tabHosts.reduce((sum, entry) => sum + entry.count, 0), summary.tab, "source rows must add up to the popup total");
 });
 

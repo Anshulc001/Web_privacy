@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { sha256 } from "../lib/data-integrity.mjs";
 import { candidateHosts, normalizeHost } from "../lib/host-match.mjs";
+import { ADS_DOMAINS, ANALYTICS_DOMAINS, REPLAY_DOMAINS, SOCIAL_DOMAINS } from "../lib/tracker-categories.mjs";
 
 const SOURCE_URL = "https://easylist-downloads.adblockplus.org/easyprivacy+easylist.txt";
 const MAX_SOURCE_BYTES = 20_000_000;
@@ -63,6 +64,22 @@ function registrableDomain(host) {
   const candidates = candidateHosts(host);
   return candidates.length ? candidates[candidates.length - 1] : null;
 }
+
+// Known tracker/ad/social/analytics domains that must always be blocked when
+// the lists publish a host rule for them, even if they don't rank in the top
+// EasyList mentions. The categorization library already knows about these hosts;
+// the blocklist should agree with it.
+//
+// Only hosts EasyList itself declares are eligible. These rules cover every
+// resource type including main_frame, so inventing one for a site the list only
+// targets by path would block visiting that site at all: "facebook.com",
+// "linkedin.com", "bing.com" and "disqus.com" are sites, not tracker endpoints.
+const MUST_BLOCK_DOMAINS = new Set([
+  ...ADS_DOMAINS,
+  ...ANALYTICS_DOMAINS,
+  ...REPLAY_DOMAINS,
+  ...SOCIAL_DOMAINS
+]);
 
 const response = await fetch(SOURCE_URL);
 if (!response.ok) throw new Error(`Rule list download failed with status ${response.status}.`);
@@ -135,12 +152,26 @@ function scoreHost(host) {
   return { mentions, labels, length: host.length, host };
 }
 
-const selected = [...hosts]
+// Rank all candidate hosts by EasyList mention frequency, then by specificity.
+const ranked = [...hosts]
   .map(scoreHost)
   .sort((a, b) => b.mentions - a.mentions || a.labels - b.labels || a.length - b.length || a.host.localeCompare(b.host))
-  .slice(0, MAX_HOST_RULES)
-  .map((entry) => entry.host)
-  .sort();
+  .map((entry) => entry.host);
+
+// Always include the known tracker hosts the lists actually declare, even if
+// they did not rank in the top EasyList mentions. They displace the lowest-ranked
+// hosts so the total never exceeds MAX_HOST_RULES. Taking the forced entries out
+// of the ranking before filling the rest means a forced host can never be sliced
+// away by the budget.
+const forced = [...MUST_BLOCK_DOMAINS].filter((host) => hosts.has(host)).sort();
+if (forced.length > MAX_HOST_RULES) throw new Error("Forced host rules exceed the static ruleset budget.");
+const forcedSet = new Set(forced);
+const remaining = ranked.filter((host) => !forcedSet.has(host));
+
+const selected = [
+  ...forced,
+  ...remaining.slice(0, MAX_HOST_RULES - forced.length)
+].sort();
 
 if (selected.length === 0) throw new Error("No rules survived selection.");
 

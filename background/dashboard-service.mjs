@@ -7,20 +7,18 @@ import { inspectSiteCookies } from "../lib/cookie-inspector.mjs";
 import {
   blockingSeries,
   describeData,
-  eventsForDay,
   groupHistoryByDay,
-  selectableDays,
   topBlockedHosts,
   todayKey
 } from "../lib/dashboard-data.mjs";
 import { scoreRisk } from "../lib/risk-score.mjs";
 import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs";
 import { inspectUrl } from "../lib/url-checks.mjs";
-import { auditPermissions } from "./permission-auditor.mjs";
+import { normalizePermissionStates } from "./permission-auditor.mjs";
+import { readSitePermissionSettings } from "./permission-settings.mjs";
+import { probePagePermissions } from "./site-probe.mjs";
 import { DEFAULT_SETTINGS } from "../lib/storage-settings.mjs";
 import { DOMAIN_CACHE_KEY, cachedDomainInfo } from "../lib/domain-info.mjs";
-
-const MAX_RECENT_HOSTS = 25;
 
 /** Keeps only the dates the dashboard can chart, so the payload stays small. */
 function pickDays(map, dates) {
@@ -31,7 +29,7 @@ function pickDays(map, dates) {
   return picked;
 }
 
-export function createDashboardService({ storageArea, settingsStore, historyStore, observationStore, cookiesApi, tabsApi, blockingManager = null, blockingCounter = null }) {
+export function createDashboardService({ storageArea, settingsStore, historyStore, observationStore, cookiesApi, tabsApi, contentSettings = null, blockingManager = null, blockingCounter = null }) {
   async function safeGet(key) {
     try {
       const stored = await storageArea.get(key);
@@ -58,9 +56,7 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       return {
         settings,
         history: {
-          totalEvents: events.length,
           days,
-          selectableDays: selectableDays(settings.historyRetentionHours),
           retentionHours: settings.historyRetentionHours,
           paused: settings.historyPaused
         },
@@ -117,13 +113,7 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       } catch {
         tabs = [];
       }
-      const events = await historyStore.read();
-      const recent = [];
-      for (let index = events.length - 1; index >= 0 && recent.length < MAX_RECENT_HOSTS; index -= 1) {
-        const host = normalizeHostname(events[index]?.hostname);
-        if (host && !recent.includes(host)) recent.push(host);
-      }
-      return { tabs, recentHosts: recent };
+      return { tabs };
     },
 
     async siteReport({ hostname, tabId } = {}) {
@@ -150,7 +140,11 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         cookies = { status: "unavailable", reason: String(error.message ?? error), cookies: [] };
       }
 
-      const audit = auditPermissions(host, observation?.permissionStates, settings.expectedSites);
+      // Ask the open page for its live state; its stored observation was written
+      // once at document_idle and can predate a permission the reader granted.
+      const probe = await probePagePermissions(tabsApi, host, observation?.permissionStates ?? null);
+      const permissionStates = normalizePermissionStates(probe.permissionStates);
+      const permissionSettings = await readSitePermissionSettings(contentSettings, host, { primaryUrl: probe.tab?.url });
       const inspected = inspectUrl(pageUrl ?? `https://${host}/`);
       const threat = checkHostForThreats(host, await safeGet(THREAT_DATA_KEY));
       const domainInfo = await cachedDomainInfo(storageArea, host);
@@ -165,14 +159,30 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         hostname: host,
         blocking,
         cookies,
-        permissions: audit.states,
-        permissionAlerts: audit.alerts,
-        expected: audit.expected,
+        permissions: permissionStates,
+        permissionSettings,
         suspicious: { ...risk, isHttps: inspected.ok ? inspected.isHttps : null, urlFindings: inspected.ok ? inspected.findings : [] },
         threat,
         breach,
         domainInfo,
         allowlisted: settings.siteAllowlist.includes(host)
+      };
+    },
+
+    /**
+     * A small live read used while the dashboard is open, so a permission granted
+     * in Chrome's own prompt shows up without a manual refresh.
+     */
+    async sitePermissions({ hostname } = {}) {
+      const host = normalizeHostname(hostname);
+      if (!host) return { status: "unavailable", reason: "A hostname is required." };
+      const observation = await observationStore.get(host);
+      const probe = await probePagePermissions(tabsApi, host, observation?.permissionStates ?? null);
+      return {
+        status: "ok",
+        hostname: host,
+        permissions: normalizePermissionStates(probe.permissionStates),
+        permissionSettings: await readSitePermissionSettings(contentSettings, host, { primaryUrl: probe.tab?.url })
       };
     },
 
@@ -191,23 +201,6 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       }
     },
 
-    async historyFor(date) {
-      const settings = await settingsStore.load();
-      const allowed = selectableDays(settings.historyRetentionHours);
-      if (typeof date !== "string" || !allowed.includes(date)) {
-        return { status: "unavailable", reason: "That date is outside the retention window.", events: [], hosts: [] };
-      }
-      const events = eventsForDay(await historyStore.read(), date);
-      const hosts = new Map();
-      for (const event of events) hosts.set(event.hostname, (hosts.get(event.hostname) ?? 0) + 1);
-      return {
-        status: "ok",
-        date,
-        events,
-        hosts: [...hosts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([host, count]) => ({ host, count }))
-      };
-    },
-
     async updateSettings(patch) {
       if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
         throw new TypeError("Settings updates must be an object.");
@@ -216,6 +209,7 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       if ("historyRetentionHours" in patch) allowed.historyRetentionHours = patch.historyRetentionHours;
       if ("historyPaused" in patch) allowed.historyPaused = patch.historyPaused;
       if ("blockingEnabled" in patch) allowed.blockingEnabled = patch.blockingEnabled;
+      if ("autoDomainLookup" in patch) allowed.autoDomainLookup = patch.autoDomainLookup;
       const settings = await settingsStore.save(allowed);
       if ("historyRetentionHours" in allowed) {
         await historyStore.prune(settings.historyRetentionHours);
@@ -244,8 +238,8 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         [DOMAIN_CACHE_KEY]: {},
         siteObservations: {}
       });
-      // "Clear all data" used to leave the allowlist, the expected sites and every
-      // other preference behind, which is a list of the sites you care about.
+      // "Clear all data" used to leave the allowlist and every other preference
+      // behind, which is a list of the sites you care about.
       if (blockingManager) {
         await blockingManager.setAllowlist([]);
         await blockingManager.setEnabled(DEFAULT_SETTINGS.blockingEnabled);

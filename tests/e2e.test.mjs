@@ -29,10 +29,10 @@ let sitePage;
 /**
  * Selects a site in the dashboard picker and waits for its section to render.
  *
- * The picker offers open tabs plus recent history, so the local test host is
- * always there while an external site depends on the network. Choosing the
- * first preference that exists keeps these tests honest on a flaky connection
- * instead of failing on an assumption about example.com.
+ * The picker offers open tabs plus the current frame's visited sites, so the
+ * local test host is always there while an external site depends on the
+ * network. Choosing the first preference that exists keeps these tests honest
+ * on a flaky connection instead of failing on an assumption about example.com.
  */
 async function pickTarget(page, preferred = ["example.com", "127.0.0.1"]) {
   const chosen = await page.evaluate((names) => {
@@ -56,8 +56,8 @@ async function pickTarget(page, preferred = ["example.com", "127.0.0.1"]) {
 
 /**
  * Makes a public domain selectable by recording one visit for it. The picker is
- * built from open tabs and history, so this seeds exactly what a user who
- * browsed that site would have — without depending on the network.
+ * built from open tabs and the frame's visits, so this seeds exactly what a user
+ * who browsed that site would have — without depending on the network.
  */
 async function seedPublicDomain(page, hostname = "example.com") {
   await page.evaluate(async (host) => {
@@ -181,7 +181,7 @@ describe("WebGuard end to end", () => {
     });
     await page.close();
     assert.ok(summary.today > 0, `expected a non-zero daily blocked count, got ${summary.today}`);
-    assert.ok(Array.isArray(summary.topHosts) && summary.topHosts.length > 0, "expected top blocked hosts");
+    assert.ok(Array.isArray(summary.tabHosts) && summary.tabHosts.length > 0, "expected blocked hosts for the tab");
   });
 
   it("renders the dashboard with live data in every section", async () => {
@@ -201,9 +201,10 @@ describe("WebGuard end to end", () => {
     assert.ok(/Visits recorded [\d.]+k?/.test(overview), `overview should show a visits count, got "${overview}"`);
     assert.ok(/Blocked today [\d.]+k?/.test(overview), `overview should show a blocked count, got "${overview}"`);
 
-    // Charts are real SVG with bars.
+    // Charts are real SVG with bars. Visits have no chart: the frame picker and
+    // the site list are the only places visit data appears.
     const charts = await page.locator(".chart svg").count();
-    assert.ok(charts >= 3, `expected 3 chart SVGs, found ${charts}`);
+    assert.ok(charts >= 2, `expected 2 chart SVGs, found ${charts}`);
     const bars = await page.locator("#chart-blocked svg rect.bar").count();
     assert.ok(bars >= 7, `blocked chart should have 7 daily bars, found ${bars}`);
 
@@ -213,15 +214,25 @@ describe("WebGuard end to end", () => {
     assert.ok(dataText.includes("Breach data"), "breach status missing");
     assert.ok(dataText.includes("Phishing blocklist"), "threat status missing");
 
+    // Settings → Privacy is generated from lib/privacy-contract.mjs, so it must
+    // name the real download host, the registry lookups and every permission.
+    const privacyText = (await page.locator("#settings").innerText()).toLowerCase();
+    assert.ok(privacyText.includes("raw.githubusercontent.com"), "privacy panel must name the download host");
+    assert.ok(privacyText.includes("rdap"), "privacy panel must name registry lookups");
+    assert.strictEqual(await page.locator("#privacy-permissions li").count(), 9, "every permission must have a reason");
+    assert.strictEqual(await page.locator("#privacy-endpoints li").count(), 2, "two request kinds, no more");
+
     // The picker starts on "All sites": site-only panels are hidden instead of
-    // sitting on the page as dead boxes, and one inspect card offers quick picks.
+    // sitting on the page as dead boxes. Site selection lives in the picker only.
     assert.strictEqual(await page.locator("#target-select").inputValue(), "", "the picker must default to all sites");
     assert.match(await page.locator("#target-select option").first().innerText(), /All sites/);
-    assert.strictEqual(await page.locator("#inspect-site").isVisible(), true, "all sites mode offers the inspect card");
+    assert.strictEqual(await page.locator("#inspect-site").count(), 0, "the separate inspect card must be gone");
+    assert.strictEqual(await page.locator("#history").count(), 0, "there must be no history section");
+    assert.strictEqual(await page.locator("#chart-sites").count(), 0, "there must be no sites-per-day history chart");
     assert.strictEqual(await page.locator("#cookies").isVisible(), false, "cookies are site-only");
     assert.strictEqual(await page.locator("header nav a[data-site-only]").count(), 5, "five site-only nav links must be marked");
     assert.strictEqual(await page.locator("header nav a[data-site-only]:visible").count(), 0, "site-only nav links are hidden in all-sites mode");
-    assert.strictEqual(await page.locator("#expected-toggle").isDisabled(), true, "site actions are disabled for all sites");
+    assert.strictEqual(await page.locator("#allowlist-toggle").isDisabled(), true, "site actions are disabled for all sites");
     assert.match(
       await page.locator("#block-unit").innerText(),
       /^blocked requests from \d+ sources? (in this browser|across \d+ websites?)$/,
@@ -251,14 +262,18 @@ describe("WebGuard end to end", () => {
     // Pick a deterministic site and check every site-scoped section.
     const target = await pickTarget(page, ["127.0.0.1", "example.com"]);
     assert.strictEqual(await page.locator("#cookies").isVisible(), true, "picking a site reveals its cookies");
-    assert.strictEqual(await page.locator("#inspect-site").isVisible(), false, "the inspect card makes way for the site view");
+
     assert.strictEqual(await page.locator("header nav a[data-site-only]:visible").count(), 5, "site mode offers every site-only section in the top nav");
     assert.match(
       await page.locator("#block-unit").innerText(),
       /^blocked requests from \d+ sources? on this site$/,
       "the Ads count must follow the picker and state its source count"
     );
-    assert.strictEqual(await page.locator("#expected-toggle").isDisabled(), false, "site actions work for a picked site");
+    assert.strictEqual(await page.locator("#allowlist-toggle").isDisabled(), false, "site actions work for a picked site");
+    assert.ok(
+      !(await page.locator("#overview-stats").innerText()).includes("Visits recorded"),
+      "a selected site must not show a visit-history number"
+    );
 
     // Top blocked hosts use horizontal bars, so long hostnames cannot collide.
     assert.strictEqual(await page.locator("#chart-trackers svg").count(), 1, "a ranked host chart is rendered");
@@ -330,7 +345,11 @@ describe("WebGuard end to end", () => {
 
     const permissions = await page.locator("#permissions-list li").count();
     assert.strictEqual(permissions, 4, "four permission rows expected");
-    assert.ok((await page.locator("#permissions-alerts").innerText()).includes("not a safety verdict"));
+    assert.strictEqual(await page.locator("#permissions-list select").count(), 4, "every permission row needs a site control");
+    const permissionRows = (await page.locator("#permissions-list").innerText()).toLowerCase();
+    for (const name of ["camera", "microphone", "geolocation", "notifications"]) {
+      assert.ok(permissionRows.includes(name), `permission row missing: ${name}`);
+    }
 
     const risk = await page.locator("#risk-summary").innerText();
     assert.ok(/Risk score \d+\/100 \((\w+)\)/.test(risk), `unexpected risk summary: ${risk}`);
@@ -357,6 +376,73 @@ describe("WebGuard end to end", () => {
 
     assert.deepStrictEqual(consoleErrors, [], "dashboard must not log console errors");
     assert.ok(target, "a site was selected");
+    await page.close();
+  });
+
+  it("changes a site permission and keeps the saved value", async () => {
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+    const target = await pickTarget(page, ["127.0.0.1", "example.com"]);
+
+    const select = page.locator("#permission-camera");
+    assert.strictEqual(await select.isDisabled(), false, "the camera control must be usable");
+    await select.selectOption("block");
+    await page.waitForFunction(
+      () => document.getElementById("permissions-status")?.textContent?.includes("block"),
+      null,
+      { timeout: 15_000 }
+    );
+
+    // Chrome itself must have the rule, not just the dashboard's copy of it.
+    const saved = await page.evaluate(async (host) =>
+      (await chrome.contentSettings.camera.get({ primaryUrl: `https://${host}/` })).setting, target);
+    assert.strictEqual(saved, "block", "Chrome must store the blocked setting");
+    await page.waitForFunction(
+      () => document.getElementById("permission-camera")?.value === "block",
+      null,
+      { timeout: 15_000 }
+    );
+
+    // Reset to the browser default so later tests are not affected.
+    await page.selectOption("#permission-camera", "ask");
+    await page.waitForFunction(
+      () => document.getElementById("permissions-status")?.textContent?.includes("ask"),
+      null,
+      { timeout: 15_000 }
+    );
+    await page.close();
+  });
+
+  it("picks up a permission granted outside the dashboard without a reload", async () => {
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+    const target = await pickTarget(page, ["127.0.0.1", "example.com"]);
+
+    // Chrome's own prompt writes a content setting and fires no storage event, so
+    // only the dashboard's live poll can notice it.
+    await page.evaluate((host) => chrome.contentSettings.notifications.set({
+      primaryPattern: `*://${host}/*`,
+      setting: "allow"
+    }), target);
+    await page.waitForFunction(
+      () => document.getElementById("permission-notifications")?.value === "allow",
+      null,
+      { timeout: 20_000 }
+    );
+    const rows = (await page.locator("#permissions-list").innerText()).toLowerCase();
+    assert.ok(rows.includes("notifications: allowed"), `the page's granted state must refresh, got "${rows}"`);
+
+    await page.evaluate((host) => chrome.contentSettings.notifications.set({
+      primaryPattern: `*://${host}/*`,
+      setting: "ask"
+    }), target);
+    await page.waitForFunction(
+      () => document.getElementById("permission-notifications")?.value === "ask",
+      null,
+      { timeout: 20_000 }
+    );
     await page.close();
   });
 
@@ -429,7 +515,7 @@ describe("WebGuard end to end", () => {
       assert.strictEqual(link.hidden, true, `site-only link ${link.href} must be hidden in all-sites mode, got hidden=${link.hidden}`);
     }
     const globalLinks = topNavAll.filter((link) => !link.hidden);
-    assert.ok(globalLinks.length >= 4, `all-sites mode must expose at least 4 global links, got ${globalLinks.length}`);
+    assert.ok(globalLinks.length >= 3, `all-sites mode must expose at least 3 global links, got ${globalLinks.length}`);
     assert.ok(globalLinks.some((link) => link.href === "#overview"), "Overview must still be a global link");
 
     // Selecting a site turns those links back on.
@@ -547,7 +633,7 @@ describe("WebGuard end to end", () => {
     await page.close();
   });
 
-  it("persists settings, history and the allowlist across a reload", async () => {
+  it("persists settings and the allowlist across a reload", async () => {
     const page = await context.newPage();
     await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
@@ -577,13 +663,11 @@ describe("WebGuard end to end", () => {
     assert.notStrictEqual(afterAllow, beforeAllow, "allowlist toggle must change state");
     assert.ok((await page.locator("#allowlist-list").innerText()).includes(target), "allowlist must list the site");
 
-    // Mark as expected.
-    await page.click("#expected-toggle");
-    await page.waitForFunction(
-      () => document.getElementById("expected-toggle")?.textContent?.includes("not expected"),
-      null,
-      { timeout: 15_000 }
-    );
+    // Automatic registry lookups can be switched off; the choice must survive.
+    await page.uncheck("#auto-lookup");
+    // The change handler saves asynchronously; reloading immediately would cancel
+    // the message before the service worker stored it.
+    await page.waitForTimeout(800);
 
     // Reload: every setting must survive.
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -592,15 +676,12 @@ describe("WebGuard end to end", () => {
     assert.strictEqual(await page.locator("#retention-select").inputValue(), "72", "retention must persist");
     assert.strictEqual(await page.isChecked("#history-paused"), true, "pause must persist");
     assert.ok((await page.locator("#allowlist-list").innerText()).includes(target), "allowlist must persist");
-
-    await pickTarget(page, [target]);
-    assert.ok(
-      (await page.locator("#expected-toggle").innerText()).includes("not expected"),
-      "expected-site marking must persist"
-    );
+    assert.strictEqual(await page.isChecked("#auto-lookup"), false, "automatic lookup setting must persist");
 
     // Undo so later tests are not affected.
-    await page.click("#expected-toggle");
+    await pickTarget(page, [target]);
+    await page.check("#auto-lookup");
+    await page.waitForTimeout(500);
     await page.click("#allowlist-toggle");
     await page.uncheck("#history-paused");
     await page.selectOption("#retention-select", "48");
@@ -608,28 +689,59 @@ describe("WebGuard end to end", () => {
     await page.close();
   });
 
-  it("limits the history date picker to the retention window and lists visits", async () => {
+  it("scopes the site picker to the selected time frame", async () => {
     const page = await context.newPage();
     await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
 
-    const retentionHours = Number(await page.locator("#retention-select").inputValue());
-    const expectedDays = Math.ceil(retentionHours / 24);
-    const options = await page.locator("#history-date option").count();
-    assert.strictEqual(options, expectedDays, `retention ${retentionHours}h should offer ${expectedDays} days, got ${options}`);
+    // Seed one visit today and one yesterday. The picker must offer only the
+    // sites the frame covers; there is no history list to fall back on.
+    const seeded = await page.evaluate(async () => {
+      const stored = await chrome.storage.local.get("historyEvents");
+      const previous = stored?.historyEvents ?? null;
+      const events = Array.isArray(previous) ? previous : [];
+      const start = new Date();
+      start.setUTCHours(0, 0, 0, 0);
+      const today = Math.min(start.getTime() + 60_000, Date.now());
+      await chrome.storage.local.set({
+        historyEvents: [
+          ...events,
+          { hostname: "today.example", timestamp: today },
+          { hostname: "yesterday.example", timestamp: start.getTime() - 1_000 }
+        ]
+      });
+      return previous;
+    });
 
-    const list = await page.locator("#history-list").innerText();
-    assert.ok(/127\.0\.0\.1|example\.com/.test(list), `history should list visited hosts, got: ${list}`);
-    assert.ok(!/https?:\/\//.test(list), "history must never show full URLs");
-    assert.ok((await page.locator("#history-retention").innerText()).includes("hostnames"), "retention rule must be shown");
+    const values = () => page.evaluate(() => [...document.getElementById("target-select").options].map((option) => option.value));
+    const frameIs = (host, expected) => page.waitForFunction(
+      ({ host, expected }) => [...document.getElementById("target-select").options].some((option) => option.value === host) === expected,
+      { host, expected },
+      { timeout: 15_000 }
+    );
 
-    // Clear history and confirm the empty state is explicit.
-    await page.click("#clear-history");
-    await page.waitForTimeout(1_200);
-    assert.ok((await page.locator("#settings-feedback").innerText()).includes("cleared"), "clear must report back");
-    const cleared = await page.locator("#history-list").innerText();
-    assert.ok(/No sites recorded|unavailable/i.test(cleared), `history should be empty, got: ${cleared}`);
-    await page.close();
+    try {
+      // Today is the default frame.
+      assert.strictEqual(await page.locator("#frame-select").inputValue(), "today", "today must be the default frame");
+      await frameIs("today.example", true);
+      await frameIs("yesterday.example", false);
+
+      await page.selectOption("#frame-select", "yesterday");
+      await frameIs("yesterday.example", true);
+      await frameIs("today.example", false);
+
+      await page.selectOption("#frame-select", "week");
+      await frameIs("today.example", true);
+      await frameIs("yesterday.example", true);
+      assert.strictEqual(await page.locator("#target-select option").first().innerText(), "All sites", "the picker keeps an all-sites entry");
+      assert.ok((await values()).every((value) => !/https?:\/\//.test(value)), "the picker must never show full URLs");
+    } finally {
+      await page.evaluate(async (previous) => {
+        if (previous === null) await chrome.storage.local.remove("historyEvents");
+        else await chrome.storage.local.set({ historyEvents: previous });
+      }, seeded);
+      await page.close();
+    }
   });
 
   it("renders the popup with the quick summary and a working dashboard button", async () => {
@@ -1421,7 +1533,7 @@ describe("WebGuard end to end", () => {
     assert.ok(/Visits recorded 0/.test(overview), `history must be empty after clearing, got: ${overview}`);
     assert.ok(/Blocked today 0/.test(overview), `counters must reset after clearing, got: ${overview}`);
     assert.ok((await page.locator("#allowlist-list").innerText()).includes("No allowlisted sites"), "allowlist must be cleared");
-    assert.ok(/No sites recorded|unavailable/i.test(await page.locator("#history-list").innerText()), "history view must be empty");
+    assert.strictEqual(await page.locator("#history").count(), 0, "there is no history section to clear");
 
     // A cleared extension must still work: browse again and watch the counter climb.
     await sitePage.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });

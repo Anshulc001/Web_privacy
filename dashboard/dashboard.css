@@ -284,8 +284,7 @@ section > h2 + h3, h2 + h3 { margin-top: var(--s4); }
 #cookies-list li,
 #permissions-list li,
 #risk-reasons li,
-#breach-list li,
-#history-list li {
+#breach-list li {
   padding: 7px 0;
   border-bottom: 1px solid var(--border);
   font-size: 0.9rem;
@@ -295,14 +294,25 @@ section > h2 + h3, h2 + h3 { margin-top: var(--s4); }
 #cookies-list li:last-child,
 #permissions-list li:last-child,
 #risk-reasons li:last-child,
-#breach-list li:last-child,
-#history-list li:last-child {
+#breach-list li:last-child {
   border-bottom: none;
   padding-bottom: 0;
 }
 
+.permission-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.permission-row select {
+  margin: 0;
+  min-width: 92px;
+}
+
 #breach-list, #allowlist-list,
-#cookies-list, #permissions-list, #risk-reasons, #history-list {
+#cookies-list, #permissions-list, #risk-reasons {
   margin: var(--s2) 0 var(--s3);
 }
 
@@ -614,7 +624,7 @@ dl#domain-details dd { margin: 0; font-weight: 500; }
 /* ---------- status text ---------- */
 
 #ads-status, #allowlist-status, #cookies-status, #breach-summary, #domain-summary,
-#target-summary, #permissions-alerts {
+#target-summary {
   font-size: 0.9rem;
   color: var(--text);
 }
@@ -631,7 +641,7 @@ dl#domain-details dd { margin: 0; font-weight: 500; }
   height: 0.2em;
 }
 
-#permissions-alerts, #risk-disclaimer {
+#risk-disclaimer {
   color: var(--muted);
   font-size: 0.82rem;
   margin-top: var(--s2);
@@ -642,32 +652,6 @@ dl#domain-details dd { margin: 0; font-weight: 500; }
   font-weight: 600;
   margin: var(--s2) 0;
 }
-
-/* ---------- site mode / inspect chips ---------- */
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s2);
-  margin-top: var(--s3);
-}
-
-.chip {
-  margin: 0;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 0.84rem;
-  font-weight: 500;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chip:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 
 /* ---------- misc ---------- */
 

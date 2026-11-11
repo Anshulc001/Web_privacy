@@ -1,5 +1,4 @@
 import { hostnameFromUrl, normalizeHostname } from "./history-store.mjs";
-import { LAST_SYNC_KEY } from "./data-sync.mjs";
 import { dayKey } from "../lib/dashboard-data.mjs";
 import { hostCoveredBy } from "../lib/host-match.mjs";
 
@@ -290,11 +289,6 @@ export function createBlockingCounter(storageArea, now = () => Date.now()) {
     async summary(tabId) {
       const stored = await storageArea.get(BLOCKING_COUNTS_KEY);
       const counts = normalizeCounts(stored?.[BLOCKING_COUNTS_KEY]);
-      // The popup states how fresh the blocklist is, so the last successful sync
-      // has to travel with the counts. Without it the popup always said
-      // "unavailable" even after a successful download.
-      const sync = (await storageArea.get(LAST_SYNC_KEY))?.[LAST_SYNC_KEY];
-      const lastSync = sync?.blocking?.at;
       // The popup's expanded list describes the page whose count it shows, and
       // every source is returned: slicing here made the rows add up to less than
       // the hero number. The popup scrolls instead.
@@ -305,10 +299,7 @@ export function createBlockingCounter(storageArea, now = () => Date.now()) {
       return {
         tab: counts.tabs?.[tabId] ?? 0,
         today: counts.days?.[dayKey(now())] ?? 0,
-        topHosts: Object.entries(counts.hosts ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 10),
-        tabHosts,
-        sources: tabHosts.length,
-        blockingDataLastSync: typeof lastSync === "string" ? lastSync : null
+        tabHosts
       };
     }
   };

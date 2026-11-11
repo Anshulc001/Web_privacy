@@ -17,9 +17,11 @@ jobs:
       - run: npm run build:cosmetic
       - run: npm run build:breach
       - run: npm run build:threat
+      # Keep the generated state block in AGENTS.md in step with the data it describes.
+      - run: npm run agents:state
       - run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/ad-tracker-rules.json data/ad-tracker-data.json data/cosmetic-rules.json data/cosmetic-generic.css data/breach-data.json data/threat-list.json
-          git diff --cached --quiet || git commit -m "chore: update blocking, breach and threat data"
+          git add data/ad-tracker-rules.json data/ad-tracker-data.json data/cosmetic-rules.json data/cosmetic-generic.css data/breach-data.json data/threat-list.json AGENTS.md
+          git diff --cached --quiet || git commit -m "chore: update data and agent state"
           git push

@@ -10,23 +10,24 @@ import {
 
 test("normalizes missing and invalid settings to privacy-safe defaults", () => {
   assert.deepEqual(normalizeSettings(), { ...DEFAULT_SETTINGS });
-  assert.deepEqual(normalizeSettings({ historyRetentionHours: 1, expectedSites: ["ok", 4] }), {
+  assert.deepEqual(normalizeSettings({ historyRetentionHours: 1, autoDomainLookup: "yes", siteAllowlist: ["ok", 4] }), {
     ...DEFAULT_SETTINGS
   });
+  assert.strictEqual(DEFAULT_SETTINGS.autoDomainLookup, true, "registry data should load without a second click");
 });
 
-test("keeps valid settings and removes duplicate expected sites", () => {
+test("keeps valid settings and removes duplicate allowlist entries", () => {
   assert.deepEqual(normalizeSettings({
     historyRetentionHours: 168,
     historyPaused: true,
     blockingEnabled: false,
-    expectedSites: ["example.com", "example.com"],
-    siteAllowlist: ["allowed.test"]
+    autoDomainLookup: false,
+    siteAllowlist: ["allowed.test", "allowed.test"]
   }), {
     historyRetentionHours: 168,
     historyPaused: true,
     blockingEnabled: false,
-    expectedSites: ["example.com"],
+    autoDomainLookup: false,
     siteAllowlist: ["allowed.test"]
   });
 });

@@ -1,7 +1,8 @@
 # Installing WebGuard
 
 WebGuard is not on the Chrome Web Store. You install it from a folder or a ZIP file, which Chrome
-calls "Load unpacked". This takes about a minute.
+calls "Load unpacked". This takes about a minute. It needs **Chrome 121 or newer** (the version that
+allows the downloaded host list to be applied as dynamic rules).
 
 ---
 
@@ -26,7 +27,7 @@ calls "Load unpacked". This takes about a minute.
 3. They follow the same steps 2–7 above, selecting the unzipped folder.
 
 The extension ID is fixed by the `key` in `manifest.json`, so everyone who installs the same build
-gets the same ID. That keeps settings and history stable across reloads.
+gets the same ID. That keeps settings and visit records stable across reloads.
 
 ---
 
@@ -34,8 +35,8 @@ gets the same ID. That keeps settings and history stable across reloads.
 
 1. Open any normal website, for example `https://example.com`.
 2. Click the WebGuard icon in the toolbar.
-3. The popup shows the site name, the blocked count for that tab and for today, the age of the
-   blocklist data, and a short list of blocked hosts.
+3. The popup shows the site name, the blocked count for this page visit, a **See blocked requests**
+   list, the allowlist button, cookies, permissions and the breach card.
 4. Press **Open Dashboard** to see all sections, charts and settings.
 
 ---
@@ -45,9 +46,12 @@ gets the same ID. That keeps settings and history stable across reloads.
 - **Blocklist data** may read "updated today" or "unavailable" for a moment. A first copy ships
   inside the package, so blocking works immediately even with no network.
 - **Breach data** is seeded from the bundled file and then refreshed daily.
-- **Domain info** stays empty until you press **Look up RDAP**. That is intentional: the lookup sends
-  the hostname to the registry, so it only happens when you ask.
-- **History** starts empty and fills as you browse. It keeps 48 hours by default.
+- **Domain info** loads as soon as you select a site in the dashboard, because that lookup is what
+  most readers want. It sends only the hostname to the registry; turn off **Look up registry data
+  automatically** in Dashboard → Settings to make the button the only trigger.
+- **The site list** starts empty and fills as you browse. The dashboard's **Today / Yesterday /
+  Past 7 days** picker lists only the sites visited in that frame; visit records are kept 7 days by
+  default (adjustable 1–7 days in Dashboard → Settings).
 
 ---
 
@@ -56,10 +60,10 @@ gets the same ID. That keeps settings and history stable across reloads.
 - **Load unpacked:** replace the files in the same folder, then press the reload arrow on the
   WebGuard card in `chrome://extensions`.
 - **ZIP:** unzip the new build over the old folder and press reload. Because the ID is fixed, your
-  settings and history survive.
+  settings and visit records survive.
 
-The three data files (rules, breach, phishing) refresh on their own once a day; you do not need to
-reinstall for those.
+The data files (blocking rules, cosmetic rules, breach, phishing) refresh on their own once a day;
+you do not need to reinstall for those.
 
 ---
 

@@ -16,7 +16,7 @@ test("uses a Chrome Manifest V3 popup and module service worker", () => {
 test("uses only the approved permissions", () => {
   assert.deepEqual(manifest.permissions, [
     "storage", "alarms", "webNavigation", "scripting", "activeTab", "cookies",
-    "declarativeNetRequest", "webRequest"
+    "declarativeNetRequest", "webRequest", "contentSettings"
   ]);
   assert.deepEqual(manifest.host_permissions, ["<all_urls>"]);
 });
@@ -45,6 +45,14 @@ test("exposes only the cosmetic filter rules to the page's content script", () =
     ],
     matches: ["<all_urls>"]
   }]);
+});
+
+test("requires the Chrome version that can hold the downloaded rule list", () => {
+  // Up to 30,000 safe dynamic rules exist only from Chrome 121; earlier versions
+  // cap the combined dynamic budget at 5,000, so the downloaded host list would
+  // be rejected and the daily update would silently never apply.
+  assert.ok(Number(manifest.minimum_chrome_version) >= 121,
+    `minimum_chrome_version must be 121 or newer, got ${manifest.minimum_chrome_version}`);
 });
 
 test("declares a valid bundled static DNR ruleset", async () => {

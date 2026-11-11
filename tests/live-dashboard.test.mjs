@@ -60,8 +60,11 @@ describe("live dashboard in Chrome", () => {
 
       // The dashboard opens in "All sites" mode, where only the whole-browser
       // sections are shown; per-site panels appear once a site is picked.
-      for (const id of ["overview", "inspect-site", "ads", "history", "settings"]) {
+      for (const id of ["overview", "ads", "settings"]) {
         assert.ok(await page.locator(`#${id}`).isVisible(), `section #${id} should be visible`);
+      }
+      for (const id of ["inspect-site", "history"]) {
+        assert.strictEqual(await page.locator(`#${id}`).count(), 0, `section #${id} must be gone`);
       }
       for (const id of ["cookies", "permissions", "domain", "suspicious", "breach"]) {
         assert.strictEqual(await page.locator(`#${id}`).isVisible(), false, `section #${id} is site-only`);

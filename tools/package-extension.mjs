@@ -26,6 +26,10 @@ async function clearPreviousPackages() {
 // key stay out of the package.
 const INCLUDE = ["manifest.json", "background", "content", "lib", "popup", "dashboard", "data"];
 
+// `ad-tracker-data.json` is what the extension downloads into dynamic rules; the
+// runtime never reads the bundled copy, so shipping it only adds weight.
+const EXCLUDE = new Set(["data/ad-tracker-data.json"]);
+
 function crc32(buffer) {
   let crc = 0xffffffff;
   for (let index = 0; index < buffer.length; index += 1) {
@@ -46,6 +50,7 @@ async function collect(path, files) {
     }
     return;
   }
+  if (EXCLUDE.has(relative(ROOT, path).split(sep).join("/"))) return;
   files.push(path);
 }
 

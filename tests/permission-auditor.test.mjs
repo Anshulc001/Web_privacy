@@ -1,23 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { auditPermissions, normalizePermissionStates, setExpectedSite } from "../background/permission-auditor.mjs";
+import { normalizePermissionStates, SENSITIVE_PERMISSION_NAMES } from "../background/permission-auditor.mjs";
 
-test("uses unavailable for unsupported permission states and flags unexplained grants", () => {
-  assert.deepEqual(normalizePermissionStates({ camera: "other", microphone: "denied" }), {
-    camera: "unavailable", microphone: "denied", geolocation: "unavailable", notifications: "unavailable"
+test("keeps the four states the browser reports and drops anything else", () => {
+  assert.deepEqual(normalizePermissionStates({ camera: "granted", microphone: "other", geolocation: "denied", notifications: "prompt" }), {
+    camera: "granted",
+    microphone: "unavailable",
+    geolocation: "denied",
+    notifications: "prompt"
   });
-  const audit = auditPermissions("ordinary-shop.test", { camera: "granted", microphone: "prompt", geolocation: "denied", notifications: "unavailable" });
-  assert.equal(audit.alerts.length, 1);
-  assert.match(audit.alerts[0].message, /heuristic, not a verdict/);
 });
 
-test("does not alert expected sites and persists the expected-site choice", async () => {
-  let saved;
-  const settingsStore = {
-    async load() { return { expectedSites: ["already.test"] }; },
-    async save(value) { saved = value; return value; }
-  };
-  await setExpectedSite(settingsStore, "Meet.Test", true);
-  assert.deepEqual(saved.expectedSites, ["already.test", "meet.test"]);
-  assert.equal(auditPermissions("meet.test", { camera: "granted" }, ["meet.test"]).alerts.length, 0);
+test("reports every permission as unavailable when a page said nothing", () => {
+  for (const value of [undefined, null, [], "granted"]) {
+    const states = normalizePermissionStates(value);
+    assert.deepEqual(Object.keys(states), SENSITIVE_PERMISSION_NAMES);
+    assert.ok(Object.values(states).every((state) => state === "unavailable"));
+  }
 });

@@ -11,7 +11,9 @@
     "build:threat": "node tools/build-threat-list.mjs",
     "build:data": "npm run build:ads && npm run build:cosmetic && npm run build:breach && npm run build:threat",
     "package": "node tools/package-extension.mjs",
-    "mcp:check": "node tools/mcp-check.mjs"
+    "mcp:check": "node tools/mcp-check.mjs",
+    "agents:state": "node tools/agents-state.mjs --write",
+    "agents:check": "node tools/agents-state.mjs --check"
   },
   "license": "MIT",
   "devDependencies": {

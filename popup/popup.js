@@ -89,8 +89,8 @@ function trackerBadge(host) {
 }
 
 function renderBlocked(summary) {
-  // Not summary.topHosts: that is the browser-wide top ten, while the number
-  // above counts this page only. Two different scopes for one panel was the bug.
+  // The number above counts this page only, so the list must too. Mixing a
+  // browser-wide host list with a per-page total was the bug.
   const hosts = Array.isArray(summary?.tabHosts) ? summary.tabHosts : [];
   const total = Number.isFinite(summary?.tab) ? summary.tab : 0;
   const sources = hosts.length;

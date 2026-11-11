@@ -26,6 +26,16 @@ function thirdPartyHosts() {
   return [...hosts];
 }
 
+// The popup and dashboard ask for a fresh read when they open, because a
+// permission granted after document_idle must not look stuck on "prompt".
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "webguard.probePermissions") return false;
+  permissionStates()
+    .then((states) => sendResponse({ permissionStates: states }))
+    .catch(() => sendResponse({ permissionStates: null }));
+  return true;
+});
+
 void (async () => {
   try {
     await chrome.runtime.sendMessage({

@@ -39,7 +39,6 @@
           <a href="#ads">Ads &amp; Trackers</a>
           <a href="#suspicious" data-site-only>Suspicious</a>
           <a href="#breach" data-site-only>Breach &amp; OSINT</a>
-          <a href="#history">History</a>
           <a href="#settings">Settings</a>
         </nav>
       </div>
@@ -56,19 +55,9 @@
         <p id="target-summary"></p>
       </section>
 
-      <section id="inspect-site" aria-labelledby="inspect-heading">
-        <h2 id="inspect-heading">Inspect a site</h2>
-        <p class="hint">Cookies, permissions, registry data and breaches are per-site. Pick one below, or choose it from the list above.</p>
-        <div id="inspect-chips" class="chips"></div>
-        <p id="inspect-empty" class="hint" hidden>No sites recorded yet. Browse somewhere and come back.</p>
-      </section>
-
       <section id="overview" aria-labelledby="overview-heading">
         <h2 id="overview-heading">Overview</h2>
         <ul id="overview-stats" class="kpis"></ul>
-
-        <h3 id="chart-sites-heading">Sites per day</h3>
-        <div id="chart-sites" class="chart"></div>
 
         <h3>Blocked requests per day</h3>
         <div id="chart-blocked" class="chart"></div>
@@ -87,9 +76,9 @@
 
       <section id="permissions" aria-labelledby="permissions-heading">
         <h2 id="permissions-heading">Permissions</h2>
+        <p class="hint">This is Chrome's own setting for this site. Ask keeps the browser prompt; Block denies it without asking. Changes apply to this site only.</p>
+        <p id="permissions-status" class="hint"></p>
         <ul id="permissions-list"></ul>
-        <p id="permissions-alerts"></p>
-        <button id="expected-toggle" type="button">Mark site as expected</button>
       </section>
 
       <section id="domain" aria-labelledby="domain-heading">
@@ -132,33 +121,36 @@
         <p id="breach-attribution"></p>
       </section>
 
-      <section id="history" aria-labelledby="history-heading">
-        <h2 id="history-heading">History</h2>
-        <p id="history-retention"></p>
-        <label for="history-date">Day</label>
-        <select id="history-date"></select>
-        <ul id="history-list"></ul>
-      </section>
-
       <section id="settings" aria-labelledby="settings-heading">
         <h2 id="settings-heading">Settings</h2>
         <p class="hint" id="sync-status"></p>
-        <label for="retention-select">History retention</label>
+        <label for="retention-select">Visit record retention</label>
         <select id="retention-select"></select>
-        <label class="switch"><input id="history-paused" type="checkbox"> Pause history recording</label>
+        <label class="switch"><input id="history-paused" type="checkbox"> Pause visit recording</label>
         <p class="hint" id="settings-retention-note"></p>
+
+        <label class="switch"><input id="auto-lookup" type="checkbox"> Look up registry data automatically</label>
+        <p class="hint">When this is on, selecting a site sends its hostname to that domain's registry (RDAP) without another click. Turn it off to use only the Domain Info button.</p>
 
         <h3>Allowlisted sites</h3>
         <ul id="allowlist-list"></ul>
 
-        <button id="clear-history" type="button">Clear history now</button>
+        <button id="clear-history" type="button">Clear visit records</button>
         <button id="clear-all" type="button" class="btn-danger">Clear all WebGuard data</button>
         <p id="settings-feedback" role="status"></p>
 
         <h3>Privacy</h3>
-        <p class="hint">WebGuard keeps everything local. It makes only two kinds of network request: the daily
-          blocklist downloads from the project's public repository, and RDAP lookups that you start
-          by pressing the button. There is no analytics, no telemetry and no account.</p>
+        <p class="hint">WebGuard keeps everything local. Two kinds of network request are possible, both listed
+          below with the exact servers they use. There is no analytics, no telemetry and no account.</p>
+
+        <h4>What can leave this device</h4>
+        <ul id="privacy-endpoints"></ul>
+
+        <h4>What is stored locally</h4>
+        <ul id="privacy-stored"></ul>
+
+        <h4>Permissions</h4>
+        <ul id="privacy-permissions"></ul>
       </section>
     </main>
 

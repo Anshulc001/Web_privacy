@@ -21,7 +21,9 @@ import { TRACKING_PARAM_RULE_ID } from "../lib/tracking-params.mjs";
 import { inspectUrl } from "../lib/url-checks.mjs";
 import { createHistoryStore, createNavigationRecorder, hostnameFromUrl } from "./history-store.mjs";
 import { createObservationStore, validateSiteObservation } from "./messages.mjs";
-import { auditPermissions, setExpectedSite } from "./permission-auditor.mjs";
+import { setSitePermission } from "./permission-settings.mjs";
+import { probeTabPermissionStates } from "./site-probe.mjs";
+import { normalizePermissionStates } from "./permission-auditor.mjs";
 import { createSettingsStore } from "../lib/storage-settings.mjs";
 
 const historyStore = createHistoryStore(chrome.storage.local);
@@ -106,6 +108,7 @@ const dashboardService = createDashboardService({
   observationStore,
   cookiesApi: chrome.cookies,
   tabsApi: chrome.tabs,
+  contentSettings: chrome.contentSettings,
   blockingManager,
   blockingCounter
 });
@@ -204,17 +207,17 @@ async function currentSitePrivacy(tabId) {
   const observation = await observationFor(tabId, hostname);
   const settings = await activeSettings();
   const cookies = await inspectSiteCookies(chrome.cookies, hostname, observation?.thirdPartyHosts ?? []);
-  const audit = auditPermissions(hostname, observation?.permissionStates, settings.expectedSites);
-  const reported = audit.states && typeof audit.states === "object"
-    ? Object.entries(audit.states).filter(([, state]) => state && state !== "unavailable")
-    : [];
+  // Probe the page itself: the stored observation is written once at
+  // document_idle and would hide a permission granted after that.
+  const permissionStates = normalizePermissionStates(
+    await probeTabPermissionStates(chrome.tabs, tabId, observation?.permissionStates ?? null)
+  );
+  const reported = Object.entries(permissionStates).filter(([, state]) => state && state !== "unavailable");
   const stored = await chrome.storage.local.get(BREACH_DATA_KEY);
   return {
     hostname,
     cookies,
-    permissions: audit.states,
-    permissionAlerts: audit.alerts,
-    expected: audit.expected,
+    permissions: permissionStates,
     permissionStatesAvailable: reported.length > 0,
     blocking: await blockingCounter.summary(tabId),
     blockingEnabled: settings.blockingEnabled,
@@ -317,7 +320,6 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
   }
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL("")) || !message || typeof message !== "object") return undefined;
   if (message.type === "webguard.currentSitePrivacy") return currentSitePrivacy(message.tabId);
-  if (message.type === "webguard.setExpectedSite") return setExpectedSite(settingsStore, message.hostname, message.expected);
   if (message.type === "webguard.setBlockingEnabled") return blockingManager.setEnabled(message.enabled);
   if (message.type === "webguard.setAllowlist") return blockingManager.setAllowlist(message.hosts);
   if (message.type === "webguard.toggleAllowlist") {
@@ -335,7 +337,10 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
   if (message.type === "webguard.dashboardOverview") return dashboardService.overview();
   if (message.type === "webguard.dashboardTargets") return dashboardService.targets();
   if (message.type === "webguard.siteReport") return dashboardService.siteReport({ hostname: message.hostname, tabId: message.tabId });
-  if (message.type === "webguard.historyFor") return dashboardService.historyFor(message.date);
+  if (message.type === "webguard.sitePermissions") return dashboardService.sitePermissions(message);
+  if (message.type === "webguard.setPermission") {
+    return setSitePermission(chrome.contentSettings, message.hostname, message.permission, message.setting);
+  }
   if (message.type === "webguard.updateSettings") return dashboardService.updateSettings(message.patch);
   if (message.type === "webguard.clearSiteCookies") return dashboardService.clearSiteCookies(message.hostname);
   if (message.type === "webguard.clearHistory") return dashboardService.clearHistory();

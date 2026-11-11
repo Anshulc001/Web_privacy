@@ -1,6 +1,7 @@
 import { barChartModel, CHART_HEIGHT, CHART_WIDTH, horizontalBarModel } from "./charts.mjs";
 import { formatCount } from "../lib/format.mjs";
 import { isPublicDomain } from "../lib/domain-info.mjs";
+import { OUTBOUND_ENDPOINTS, PRIVACY_PERMISSIONS, STORED_DATA } from "../lib/privacy-contract.mjs";
 import { categorizeTrackerHost } from "../lib/tracker-categories.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -11,6 +12,7 @@ let blockingToggleBusy = false;
 // than left on the page as boxes saying "select a site".
 const SITE_ONLY_SECTIONS = ["cookies", "permissions", "domain", "suspicious", "breach"];
 const PERMISSION_STATE_LABELS = { granted: "allowed", denied: "not permitted", prompt: "not given" };
+const PERMISSION_SETTING_LABELS = { allow: "Allow", ask: "Ask", block: "Block" };
 
 const el = (id) => document.getElementById(id);
 
@@ -27,6 +29,10 @@ function text(tag, value, className) {
 
 function listItem(value) {
   return text("li", value);
+}
+
+function permissionLabel(name) {
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
 }
 
 /** A retention value is stored in hours but only ever shown in whole days. */
@@ -244,32 +250,64 @@ async function send(message) {
   return chrome.runtime.sendMessage(message);
 }
 
-function fillTargetSelect(targets) {
+/** Hosts with recorded visits inside the selected frame, most visited first. */
+function frameHosts() {
+  const dates = new Set(frameDates());
+  const totals = new Map();
+  for (const day of state.overview?.history.days ?? []) {
+    if (!dates.has(day.date)) continue;
+    for (const entry of day.hosts ?? []) totals.set(entry.host, (totals.get(entry.host) ?? 0) + entry.count);
+  }
+  return [...totals.entries()]
+    .map(([host, count]) => ({ host, count }))
+    .sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
+}
+
+/** Selects a site in the picker, adding it if the frame does not list it. */
+async function selectTarget(hostname) {
+  const select = el("target-select");
+  if (![...select.options].some((option) => option.value === hostname)) {
+    const option = document.createElement("option");
+    option.value = hostname;
+    option.textContent = hostname;
+    select.append(option);
+  }
+  select.value = hostname;
+  state.target = hostname;
+  await applyScope();
+}
+
+/**
+ * The picker follows the time frame: it lists the sites visited in that frame,
+ * plus open tabs (the site in front of the reader even if the frame does not
+ * include its visit). There is no separate history list anywhere.
+ */
+function fillTargetSelect() {
   const select = el("target-select");
   clear(select);
   const all = document.createElement("option");
   all.value = "";
   all.textContent = "All sites";
   select.append(all);
+
+  const openHosts = new Set((state.targets?.tabs ?? []).map((tab) => tab.hostname).filter(Boolean));
   const seen = new Set();
-  for (const tab of targets.tabs ?? []) {
-    if (seen.has(tab.hostname)) continue;
-    seen.add(tab.hostname);
+  for (const entry of frameHosts()) {
+    seen.add(entry.host);
     const option = document.createElement("option");
-    option.value = tab.hostname;
-    option.textContent = `${tab.hostname} (open tab)`;
+    option.value = entry.host;
+    option.textContent = `${entry.host} — ${entry.count} visit${entry.count === 1 ? "" : "s"}${openHosts.has(entry.host) ? " (open tab)" : ""}`;
     select.append(option);
   }
-  for (const host of targets.recentHosts ?? []) {
+  for (const host of openHosts) {
     if (seen.has(host)) continue;
-    seen.add(host);
     const option = document.createElement("option");
     option.value = host;
-    option.textContent = host;
+    option.textContent = `${host} (open tab)`;
     select.append(option);
   }
   // The reader's choice survives a refresh, but only while the site is still offered.
-  if (state.target && seen.has(state.target)) select.value = state.target;
+  if (state.target && [...select.options].some((option) => option.value === state.target)) select.value = state.target;
   else state.target = null;
 }
 
@@ -290,56 +328,33 @@ function renderKpis() {
   const days = site ? site.blocking?.days ?? {} : browserDays();
   const total = frameTotal(days);
   stats.append(kpiCard(frameLabel(), formatCount(total), site ? "on this site" : "requests stopped", total));
-  stats.append(kpiCard("Visits recorded", formatCount(overview.history.totalEvents), `last ${dayLabel(overview.history.retentionHours)}`, overview.history.totalEvents));
+  // Visit totals belong to the all-sites view only. A selected site shows its
+  // own panels, and none of them is a visit history.
+  if (!site) {
+    const visits = frameDates().reduce((sum, date) => {
+      const day = overview.history.days.find((entry) => entry.date === date);
+      return sum + (day?.count ?? 0);
+    }, 0);
+    const frameWords = state.frame === "week" ? "past 7 days" : state.frame;
+    stats.append(kpiCard("Visits recorded", formatCount(visits), frameWords, visits));
+  }
   stats.append(kpiCard("Blocking", overview.blocking.enabled ? "On" : "Off", `${overview.blocking.allowlist.length} allowlisted`));
-  stats.append(kpiCard("History", overview.history.paused ? "Paused" : "Recording", `${dayLabel(overview.history.retentionHours)} retention`));
 }
 
-/** Charts follow the picker: all sites, or only the selected one. */
+/** Blocked-request charts follow the site picker; the frame sets the totals. */
 function renderCharts() {
   const overview = state.overview;
   if (!overview) return;
   const site = state.target ? state.site : null;
-  el("chart-sites-heading").textContent = site ? "Visits per day" : "Sites per day";
-
-  if (site) {
-    // Both charts share the same seven-day axis, so their bars line up.
-    const visitsByDay = new Map(overview.history.days.map((day) => [
-      day.date,
-      day.hosts.find((entry) => entry.host === state.target)?.count ?? 0
-    ]));
-    renderBarChart(
-      el("chart-sites"),
-      overview.blocking.series.map((day) => ({ label: day.date.slice(5), value: visitsByDay.get(day.date) ?? 0 })),
-      "Visits per day"
-    );
-    const days = site.blocking?.days ?? {};
-    renderBarChart(
-      el("chart-blocked"),
-      overview.blocking.series.map((day) => ({ label: day.date.slice(5), value: Number.isFinite(days[day.date]) ? days[day.date] : 0 })),
-      "Blocked requests per day"
-    );
-    renderRankedBars(
-      el("chart-trackers"),
-      rankedSourceItems(site.blocking?.dayHosts, frameTotal(days)),
-      "Top blocked hosts"
-    );
-    return;
-  }
-
-  renderBarChart(
-    el("chart-sites"),
-    overview.history.days.map((day) => ({ label: day.date.slice(5), value: day.count })),
-    "Sites per day"
-  );
+  const days = site ? site.blocking?.days ?? {} : browserDays();
   renderBarChart(
     el("chart-blocked"),
-    overview.blocking.series.map((day) => ({ label: day.date.slice(5), value: day.count })),
+    overview.blocking.series.map((day) => ({ label: day.date.slice(5), value: Number.isFinite(days[day.date]) ? days[day.date] : 0 })),
     "Blocked requests per day"
   );
   renderRankedBars(
     el("chart-trackers"),
-    rankedSourceItems(overview.blocking.dayHosts, frameTotal(browserDays())),
+    rankedSourceItems(site ? site.blocking?.dayHosts : overview.blocking.dayHosts, frameTotal(days)),
     "Top blocked hosts"
   );
 }
@@ -356,6 +371,8 @@ async function loadOverview() {
 
   // One compact freshness line in Settings instead of an Overview block.
   el("sync-status").textContent = overview.data.map((entry) => entry.text).join(" ");
+  el("auto-lookup").checked = overview.settings.autoDomainLookup;
+  renderPrivacy();
 
   const allowlistList = el("allowlist-list");
   clear(allowlistList);
@@ -370,7 +387,6 @@ async function loadOverview() {
   // back. While the change is being saved, the switch belongs to the user.
   if (!blockingToggleBusy) el("blocking-toggle").checked = overview.blocking.enabled;
   el("history-paused").checked = overview.history.paused;
-  el("history-retention").textContent = `Only the last ${dayLabel(overview.history.retentionHours)} of hostnames are kept, and older entries are pruned automatically.`;
   el("settings-retention-note").textContent = `Retention is ${dayLabel(overview.history.retentionHours)}. Data older than that is deleted automatically.`;
 
   const retentionSelect = el("retention-select");
@@ -383,18 +399,33 @@ async function loadOverview() {
     retentionSelect.append(option);
   }
 
-  const dateSelect = el("history-date");
-  clear(dateSelect);
-  for (const date of overview.history.selectableDays) {
-    const option = document.createElement("option");
-    option.value = date;
-    option.textContent = date;
-    dateSelect.append(option);
+  // The picker is rebuilt from this overview so it always lists the frame's sites.
+  fillTargetSelect();
+}
+
+/** Registry servers are many; name a few and count the rest. */
+function hostSummary(hosts) {
+  if (hosts.length <= 4) return hosts.join(", ");
+  return `${hosts.slice(0, 3).join(", ")} and ${hosts.length - 3} more registry servers`;
+}
+
+/** Settings → Privacy: exactly what can leave this device and what is stored. */
+function renderPrivacy() {
+  const endpoints = el("privacy-endpoints");
+  clear(endpoints);
+  for (const endpoint of OUTBOUND_ENDPOINTS) {
+    endpoints.append(listItem(
+      `${endpoint.label} — ${endpoint.when} ${endpoint.detail} Servers: ${hostSummary(endpoint.hosts)}.`
+    ));
   }
 
-  if (dateSelect.value) {
-    await loadHistoryDay(dateSelect.value);
-  }
+  const stored = el("privacy-stored");
+  clear(stored);
+  for (const entry of STORED_DATA) stored.append(listItem(`${entry.label}: ${entry.detail}`));
+
+  const permissions = el("privacy-permissions");
+  clear(permissions);
+  for (const permission of PRIVACY_PERMISSIONS) permissions.append(listItem(`${permission.name} — ${permission.why}`));
 }
 
 /** A heading row inside the blocked list, so both breakdowns stay one list. */
@@ -483,7 +514,6 @@ async function loadSite(hostname) {
   }
   state.site = report;
   el("target-summary").textContent = `${report.hostname}${report.suspicious.isHttps === false ? " (plain HTTP)" : ""}`;
-  el("expected-toggle").disabled = false;
   el("allowlist-toggle").disabled = false;
 
   const hasRegistryData = report.domainInfo?.status === "ok";
@@ -508,35 +538,15 @@ async function loadSite(hostname) {
     }
   }
 
-  const permissionsList = el("permissions-list");
-  clear(permissionsList);
-  const permissionNames = Object.keys(report.permissions ?? {});
-  const reportablePermissions = permissionNames.filter((name) => {
-    const state = report.permissions[name];
-    return state && state !== "unavailable";
-  });
-  if (reportablePermissions.length === 0) {
-    permissionsList.textContent = "No usable permission data for this site.";
-  } else {
-    for (const name of reportablePermissions) {
-      const state = report.permissions[name];
-      const label = PERMISSION_STATE_LABELS[state] ?? "not given";
-      permissionsList.append(listItem(`${name.charAt(0).toUpperCase()}${name.slice(1)}: ${label}`));
-    }
-  }
-  el("permissions-alerts").textContent = report.permissionAlerts.length
-    ? report.permissionAlerts.map((alert) => alert.message).join(" ")
-    : "No unusual permission pattern detected. This is not a safety verdict.";
-  const expectedButton = el("expected-toggle");
-  expectedButton.textContent = report.expected ? "Mark site as not expected" : "Mark site as expected";
-  expectedButton.dataset.expected = String(report.expected);
-
+  el("permissions-status").textContent = "";
+  renderSitePermissions(report.permissions, report.permissionSettings);
   renderDomainDetails(report.domainInfo, report.hostname);
 
   // Registry data is loaded once a public domain is selected, so the reader gets
-  // the registrar and dates without having to click first. IPs, local hosts and
-  // anything already cached are skipped.
-  if (!hasRegistryData && isPublicDomain(report.hostname)) void lookupSelectedDomain(report.hostname);
+  // the registrar and dates without a second click. The Settings switch makes
+  // that outbound request optional; IPs, local hosts and cached answers skip it.
+  const autoLookup = state.overview?.settings?.autoDomainLookup !== false;
+  if (autoLookup && !hasRegistryData && isPublicDomain(report.hostname)) void lookupSelectedDomain(report.hostname);
 
   el("ads-status").textContent = `Blocking is ${state.overview?.blocking.enabled ? "on" : "off"} for this browser.`;
   el("allowlist-status").textContent = report.allowlisted ? "This site is allowlisted, so blocking is skipped here." : "This site is not allowlisted.";
@@ -577,6 +587,79 @@ async function loadSite(hostname) {
   }
 }
 
+/** Paints the four permission rows from a page report or a live refresh. */
+function renderSitePermissions(permissions, permissionSettings) {
+  const permissionsList = el("permissions-list");
+  clear(permissionsList);
+  const permissionNames = Object.keys(permissions ?? {});
+  const reportablePermissions = permissionNames.filter((name) => {
+    const state = permissions[name];
+    return state && state !== "unavailable";
+  });
+  const siteSettings = permissionSettings?.settings ?? {};
+  if (reportablePermissions.length === 0) {
+    permissionsList.textContent = "No usable permission data for this site.";
+    return;
+  }
+  for (const name of reportablePermissions) {
+    const state = permissions[name];
+    const label = PERMISSION_STATE_LABELS[state] ?? "not given";
+    const row = document.createElement("li");
+    row.className = "permission-row";
+    row.append(text("span", `${permissionLabel(name)}: ${label}`));
+
+    // Chrome persists allow/ask/block per site; the state above is what the
+    // page currently reported, which can differ until it asks again.
+    const select = document.createElement("select");
+    select.id = `permission-${name}`;
+    select.setAttribute("aria-label", `${permissionLabel(name)} setting for this site`);
+    const setting = siteSettings[name];
+    for (const value of ["allow", "ask", "block"]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = PERMISSION_SETTING_LABELS[value];
+      option.selected = (setting ?? "ask") === value;
+      select.append(option);
+    }
+    select.disabled = !setting || setting === "unavailable";
+    select.addEventListener("change", () => { void savePermission(name, select); });
+    row.append(select);
+    permissionsList.append(row);
+  }
+  if (permissionSettings?.status !== "ok" && !el("permissions-status").textContent) {
+    el("permissions-status").textContent = permissionSettings?.reason
+      ?? "Chrome's site permission settings are unavailable here.";
+  }
+}
+
+// Chrome's prompt writes a content setting, which fires no storage event. Polling
+// the one section keeps the granted state and the dropdown current while the
+// dashboard is open, without repainting the rest of the page.
+let permissionTimer = null;
+let permissionRefreshBusy = false;
+async function refreshSitePermissions() {
+  const host = state.target;
+  if (!host || permissionRefreshBusy || document.visibilityState !== "visible") return;
+  // Never rebuild a control the reader is using; the next tick will catch up.
+  if (document.activeElement?.closest?.("#permissions-list")) return;
+  permissionRefreshBusy = true;
+  try {
+    const result = await send({ type: "webguard.sitePermissions", hostname: host });
+    if (state.target !== host || result?.status !== "ok") return;
+    state.site = { ...state.site, permissions: result.permissions, permissionSettings: result.permissionSettings };
+    renderSitePermissions(result.permissions, result.permissionSettings);
+  } catch {
+    // Keep the last known state; the next tick retries.
+  } finally {
+    permissionRefreshBusy = false;
+  }
+}
+
+function startPermissionPolling() {
+  clearInterval(permissionTimer);
+  permissionTimer = window.setInterval(() => { void refreshSitePermissions(); }, 5_000);
+}
+
 /** A registry timestamp as a plain date; the time of day is never useful here. */
 function registryDate(value) {
   if (typeof value !== "string") return "not reported";
@@ -588,7 +671,7 @@ function registryDate(value) {
 function renderDomainDetails(info, hostname, summary = null) {
   el("domain-summary").textContent = summary ?? (info
     ? `Cached registry data for ${hostname}.`
-    : "No registry data yet. Use the button to look this domain up.");
+    : "No registry data yet.");
   const details = el("domain-details");
   clear(details);
   if (!info || info.status !== "ok") return;
@@ -656,11 +739,7 @@ function resetSiteSections() {
   const permissionsList = el("permissions-list");
   clear(permissionsList);
   permissionsList.textContent = "Select a site above to see its permissions.";
-  el("permissions-alerts").textContent = "";
-  const expectedButton = el("expected-toggle");
-  expectedButton.disabled = true;
-  expectedButton.textContent = "Mark site as expected";
-  expectedButton.dataset.expected = "false";
+  el("permissions-status").textContent = "";
 
   el("allowlist-status").textContent = "Select a site above to allowlist it.";
   el("allowlist-toggle").disabled = true;
@@ -684,7 +763,6 @@ function resetSiteSections() {
 
 /** All-sites mode hides the per-site panels and the site-only top-nav links. */
 function setSiteMode(isSite) {
-  el("inspect-site").hidden = isSite;
   // The header nav is the only section list now (the old #site-tabs strip is
   // gone), so it is pruned to the links that exist in the current mode.
   for (const id of SITE_ONLY_SECTIONS) el(id).hidden = !isSite;
@@ -692,44 +770,20 @@ function setSiteMode(isSite) {
   syncNav();
 }
 
-/** Clickable quick-picks for open tabs and recently visited domains. */
-function renderInspectChips() {
-  const chips = el("inspect-chips");
-  clear(chips);
-  const entries = [];
-  const seen = new Set();
-  for (const tab of state.targets?.tabs ?? []) {
-    if (!tab.hostname || seen.has(tab.hostname)) continue;
-    seen.add(tab.hostname);
-    entries.push({ hostname: tab.hostname, open: true });
-  }
-  for (const host of state.targets?.recentHosts ?? []) {
-    if (!host || seen.has(host)) continue;
-    seen.add(host);
-    entries.push({ hostname: host, open: false });
-  }
-  el("inspect-empty").hidden = entries.length > 0;
-  for (const entry of entries.slice(0, 16)) {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "chip";
-    chip.textContent = entry.open ? `${entry.hostname} (open)` : entry.hostname;
-    chip.addEventListener("click", () => { void selectTarget(entry.hostname); });
-    chips.append(chip);
-  }
-}
-
-async function selectTarget(hostname) {
-  const select = el("target-select");
-  if (![...select.options].some((option) => option.value === hostname)) {
-    const option = document.createElement("option");
-    option.value = hostname;
-    option.textContent = hostname;
-    select.append(option);
-  }
-  select.value = hostname;
-  state.target = hostname;
-  await applyScope();
+/** Saves one Chrome site-permission setting, then re-reads the site report. */
+async function savePermission(permission, select) {
+  const host = state.target;
+  if (!host) return;
+  const setting = select.value;
+  select.disabled = true;
+  const result = await send({ type: "webguard.setPermission", hostname: host, permission, setting });
+  // A scope change during the save must not write feedback about another site.
+  if (state.target !== host) return;
+  select.disabled = false;
+  if (result?.status === "ok") await loadSite(host);
+  el("permissions-status").textContent = result?.status === "ok"
+    ? `${permissionLabel(permission)} is now "${setting}" for ${host}.`
+    : (result?.reason ?? "That permission could not be changed.");
 }
 
 /** Applies the site picker to every panel, then re-renders the summary. */
@@ -742,29 +796,11 @@ async function applyScope() {
   await loadBlockedForSite();
 }
 
-async function loadHistoryDay(date) {
-  const result = await send({ type: "webguard.historyFor", date });
-  const list = el("history-list");
-  clear(list);
-  if (!result || result.status !== "ok") {
-    list.append(listItem(result?.reason ?? "History for that day is unavailable."));
-    return;
-  }
-  el("history-retention").textContent = `Only the last ${dayLabel(state.overview?.history.retentionHours ?? 48)} of hostnames are kept.`;
-  if (result.hosts.length === 0) {
-    list.textContent = "No sites recorded for this day.";
-    return;
-  }
-  for (const entry of result.hosts) list.append(listItem(`${entry.host} — ${entry.count} visit(s)`));
-}
-
 async function refresh() {
   try {
-    const targets = await send({ type: "webguard.dashboardTargets" });
-    state.targets = targets;
-    fillTargetSelect(targets);
+    state.targets = await send({ type: "webguard.dashboardTargets" });
+    // loadOverview rebuilds the site picker from the frame's visit data.
     await loadOverview();
-    renderInspectChips();
     await applyScope();
     el("status").textContent = "Loaded.";
     el("status").className = "is-ready";
@@ -812,10 +848,6 @@ el("target-select").addEventListener("change", async (event) => {
 
 el("refresh-site").addEventListener("click", () => refresh());
 
-el("history-date").addEventListener("change", async (event) => {
-  await loadHistoryDay(event.target.value);
-});
-
 el("blocking-toggle").addEventListener("change", async (event) => {
   blockingToggleBusy = true;
   try {
@@ -837,11 +869,10 @@ el("retention-select").addEventListener("change", async (event) => {
   await loadOverview();
 });
 
-el("expected-toggle").addEventListener("click", async (event) => {
-  if (!state.target) return;
-  const expected = event.target.dataset.expected !== "true";
-  await send({ type: "webguard.setExpectedSite", hostname: state.target, expected });
-  await loadSite(state.target);
+el("auto-lookup").addEventListener("change", async (event) => {
+  await send({ type: "webguard.updateSettings", patch: { autoDomainLookup: event.target.checked } });
+  await loadOverview();
+  await applyScope();
 });
 
 el("allowlist-toggle").addEventListener("click", async () => {
@@ -863,9 +894,16 @@ el("expand-blocked").addEventListener("click", () => {
 
 el("frame-select").addEventListener("change", async (event) => {
   state.frame = event.target.value;
-  renderKpis();
-  renderCharts();
-  await loadBlockedForSite();
+  // The frame decides which sites exist for the reader, so the picker is rebuilt
+  // before the panels: a site outside the frame is no longer offered.
+  fillTargetSelect();
+  if (state.target) {
+    await applyScope();
+  } else {
+    renderKpis();
+    renderCharts();
+    await loadBlockedForSite();
+  }
 });
 
 el("rdap-lookup").addEventListener("click", () => {
@@ -887,7 +925,7 @@ el("clear-site-cookies").addEventListener("click", async () => {
 
 el("clear-history").addEventListener("click", async () => {
   await send({ type: "webguard.clearHistory" });
-  el("settings-feedback").textContent = "History cleared.";
+  el("settings-feedback").textContent = "Visit records cleared.";
   await loadOverview();
   await applyScope();
 });
@@ -908,6 +946,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (!LIVE_KEYS.some((key) => key in changes)) return;
   clearTimeout(liveTimer);
   liveTimer = setTimeout(() => { void refresh(); }, 250);
+});
+
+startPermissionPolling();
+window.addEventListener("focus", () => { void refreshSitePermissions(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void refreshSitePermissions();
 });
 
 void refresh();
