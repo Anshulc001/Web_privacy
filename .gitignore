@@ -20,6 +20,8 @@ dist/
 # Local working notes (not pushed)
 WORKLOG.md
 SITE-CANDIDATES.md
+AUDIT-*.md
+IDEAS.md
 
 # OS / editor artifacts
 .DS_Store

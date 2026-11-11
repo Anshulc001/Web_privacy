@@ -52,8 +52,18 @@ them. Do not edit inside the markers by hand.
 - Phishing list built: 2026-11-11
 - Default visit-record retention: 168 hours (7 days)
 - Manifest permissions: storage, alarms, webNavigation, scripting, activeTab, cookies, declarativeNetRequest, webRequest, contentSettings
-- Test files: 33
+- Test files: 34
 <!-- END:AGENTS-STATE -->
+
+## Discussion log (ideas, not facts)
+
+Product ideas, research findings, rejected options and conclusions reached in
+conversation live in the gitignored `IDEAS.md`. It is deliberately not part of the
+repository and not a description of current behaviour: the code and this file are the
+truth, and `IDEAS.md` only remembers what was discussed. Consult its topic index when a
+request may repeat an earlier discussion, cite the entry ID, and say plainly whether the
+item is still an idea or is implemented in the code. When a session produces a new idea,
+conclusion or rejected option, add it there before finishing.
 
 ## Project rules (non-negotiable)
 
@@ -385,7 +395,79 @@ pruning) and test both the store and the effect.
 One short entry per session: what changed, what was verified, what is open. Git has
 the full diff; this section is the story a zero-context session needs.
 
+### 2026-11-12 — discussion log for ideas, separate from behaviour
+- Created gitignored `IDEAS.md`: the place product ideas, research findings and
+  conversation conclusions are recorded, with stable IDs (`DEC-`, `RES-`, `IDEA-`,
+  `REJ-`, `MET-`, `OPEN-`) and a topic index, so a repeated request can be answered with
+  "we already talked about this" and the earlier reasoning instead of being
+  re-litigated. It opens by saying it is not a description of the extension; the code
+  and this file stay the truth, and implemented items are marked as such.
+- Seeded with the product-direction discussion: repositioning from a blocklist
+  competitor to a local permission/privacy audit, the store-policy, `contentSettings`,
+  licensing and prompt-UX research behind it, the 90-day sketch, eight feature ideas,
+  six rejected options and the open questions. Nothing there is scheduled or built
+  merely by being written down.
+- Verified: `npm run agents:check` clean, `npm test` green, and `git check-ignore`
+  confirms `IDEAS.md` cannot be committed.
+
+### 2026-11-12 — full function/control audit (second pass)
+- Inventoried every shipped surface instead of sampling: 144 `lib/`+`background/`
+  exports, 55 dashboard/popup element ids, 4 content scripts and the 16 privileged
+  worker message types, each with edge-case rows in the gitignored
+  `AUDIT-2026-11-12.md`. Added a 10-test direct suite for `dashboard-service.mjs`
+  (previously only covered through e2e) and closed the nine functions with no
+  named test.
+- Fixed five more real defects: concurrent navigations could lose a history record
+  (writes now share one queue); a failing blocking-count prune no longer stops
+  history pruning; a null `urlFindings` list no longer throws in `scoreRisk`; the
+  default allowlist array is frozen so a fallback cannot mutate it; and a tab
+  lookup that resolves empty now says the tab is gone instead of "A hostname is
+  required".
+- Re-verified against a fresh export scan: every exported function is named by a
+  test; only literal constants remain unnamed, by design.
+- Verified: full `npm test` passes including the real-Chrome e2e and live suites;
+  `npm run agents:check` clean. The first-pass live audit remains 154/154 across
+  six real sites (ndtv.com, bbc.com, en.wikipedia.org, github.com,
+  permission.site, example.com).
+
 ### 2026-11-12
+- Ran a full edge-case and UI audit against the changed cookie work and both UIs:
+  every cookie/allowlist helper and every popup/dashboard control has a matrix row
+  in the gitignored `AUDIT-2026-11-12.md`, and the matrix now records the checks
+  that were run. `npm test` 325/325 pass (49 suites), plus a real-Chrome live audit
+  of 154/154 checks across ndtv.com, bbc.com, en.wikipedia.org, github.com,
+  permission.site and example.com with screenshots in `test-results/audit-shots/`.
+- Fixed a stale-scope bug the audit found: changing the header frame so the
+  selected site was no longer offered nulled the picker selection but left the
+  site-only panels showing that site's cookies, permissions and risk. The frame
+  handler now always calls `applyScope()`, which hides the panels and rebuilds the
+  all-sites view. A regression is asserted in `tests/e2e.test.mjs`.
+- Fixed an out-of-order report race: two quick picker changes could let the older
+  `webguard.siteReport` answer overwrite the site the reader had moved to. A late
+  answer for another host is now ignored, and a failed report clears the panels to
+  explicit "unavailable" text instead of leaving the previous site's rows.
+- Fixed the allowlist disagreement: blocking and the counter treat a host as
+  allowlisted when its registrable domain is listed, but the popup/dashboard
+  report used an exact match. A new `toggleAllowlistEntry` in `lib/host-match.mjs`
+  adds/removes with the same coverage rule, so "Remove from allowlist" on
+  `www.bbc.com` really removes the `bbc.com` entry (unit + live tested).
+- Hardened the changed cookie path: a non-array third-party host list no longer
+  throws, an impossible `expirationDate` can no longer throw a RangeError out of
+  the whole cookie panel, and `chrome.cookies.remove` returning null ("not found")
+  is no longer counted as a removed cookie.
+- Click handlers in both UIs now catch worker failures: blocking/allowlist/
+  permission/retention/auto-lookup/clear buttons re-enable and say what failed
+  instead of leaving a disabled control or an unhandled rejection. The popup
+  toggles are disabled while saving so a double click cannot race itself.
+- Live audit evidence: ndtv 19 blocked / 7 cookies, bbc 11 blocked / 22 cookies,
+  clear removed 22/22 and left 0 rows, wikipedia 9 cookies, github 6,
+  permission.site's Camera button produced a live `Camera: allowed` row with an
+  Allow/Ask/Block control. No extension console or page errors. The audit harness
+  itself mis-read the empty permissions list as zero rows at first (the empty
+  state is the list's text, not an `li`); the assertion was corrected.
+- Open: worker-failure click paths are handled but were not simulated in a real
+  browser, and permission observation still only sees JS API requests in the top
+  frame (the existing limitation).
 - Fixed the per-site permission control: choosing "Ask" no longer writes an
   `ask` rule. Chrome treats `ask` as its default, and an extension-written ask rule
   keeps the site prompting on every reload and wins over the reader's Allow in the
@@ -433,6 +515,24 @@ the full diff; this section is the story a zero-context session needs.
 - Automation limits: Playwright's bundled Chromium (156) is the only browser that loads
   the unpacked extension here; the installed Chrome 157 ignores `--load-extension`, so
   it cannot be driven by the tests.
+- Ran a full functional plus visual audit in real Chrome: fresh profile, then
+  https://www.ndtv.com and https://permission.site, driving the popup and every
+  dashboard control (frame picker, site picker, blocking switch, allowlist, retention,
+  pause, cookie clear, clear-history, clear-all, permission dropdowns) and reading the
+  screenshots. 72/73 checks passed; the three leftover console errors are NDTV's own
+  Google sign-in requests, not the extension.
+- Fixed a real mismatch the audit found: the cookie list queried only
+  `www.example.com`, so `www.ndtv.com` showed 1 cookie while "Clear site cookies"
+  removed 7 (the `.ndtv.com` ones). `inspectSiteCookies` now queries the host and its
+  registrable domain and keeps each cookie once, so the list, the count and the clear
+  button agree.
+- Fixed three visible papercuts: "1 cookie(s)." grammar and a raw ISO timestamp in the
+  dashboard cookie rows, and "Clear all WebGuard data" showing nothing for ~5 seconds
+  while it reinstalled 25,000 dynamic rules (both clear buttons now disable and report
+  progress).
+- An all-zero week used to draw an empty axis with a lone "1" tick; the blocked-per-day
+  chart now says "No data yet." like the host chart, and `live-dashboard.test.mjs`
+  asserts that empty-state contract instead of demanding an SVG on a fresh profile.
 - Open: only permissions a page requests through a JS API are observable, and only in
   the top frame. A grant made from Chrome's own settings for a site that never asks is
   invisible, and so is a `Permissions-Policy` header alone.
