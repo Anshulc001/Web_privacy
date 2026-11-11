@@ -1,19 +1,19 @@
 import { hostnameFromUrl } from "./history-store.mjs";
 
 /**
- * Asks one tab's content script for the page's current permission state. The
- * stored observation is written once at document_idle, so a permission the
- * reader granted afterwards would otherwise stay stale until a page reload.
+ * Asks one tab's content script for the current state of the given permission
+ * names. The names come from what the page itself requested, so the probe never
+ * invents a permission the site never mentioned.
  */
-export async function probeTabPermissionStates(tabsApi, tabId, fallback = null) {
-  if (!Number.isInteger(tabId) || tabId < 0) return fallback;
+export async function probeTabPermissionStates(tabsApi, tabId, names = []) {
+  if (!Number.isInteger(tabId) || tabId < 0 || names.length === 0) return null;
   try {
-    const answer = await tabsApi.sendMessage(tabId, { type: "webguard.probePermissions" });
+    const answer = await tabsApi.sendMessage(tabId, { type: "webguard.probePermissions", names });
     const states = answer?.permissionStates;
-    return states && typeof states === "object" ? states : fallback;
+    return states && typeof states === "object" ? states : null;
   } catch {
-    // Restricted pages have no content script; the stored observation is all we get.
-    return fallback;
+    // Restricted pages have no content script; the caller reports "unavailable".
+    return null;
   }
 }
 
@@ -32,8 +32,8 @@ export async function findTabForHost(tabsApi, host) {
  * Probes an open tab for this host and returns both the tab (whose URL gives the
  * exact origin for a content-setting read) and the fresh permission states.
  */
-export async function probePagePermissions(tabsApi, host, fallback = null) {
+export async function probePagePermissions(tabsApi, host, names = []) {
   const tab = await findTabForHost(tabsApi, host);
-  if (!tab) return { tab: null, permissionStates: fallback };
-  return { tab, permissionStates: await probeTabPermissionStates(tabsApi, tab.id, fallback) };
+  if (!tab) return { tab: null, permissionStates: null };
+  return { tab, permissionStates: await probeTabPermissionStates(tabsApi, tab.id, names) };
 }

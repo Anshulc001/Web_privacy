@@ -1,8 +1,13 @@
-const PERMISSIONS = ["camera", "microphone", "geolocation", "notifications"];
-
-async function permissionStates() {
+/**
+ * Permission state is read for exactly the names the worker asks about. The
+ * worker knows them because content/permission-observer.js reports what the
+ * site actually requested, so a permission WebGuard has never heard of still
+ * gets a row and an honest state.
+ */
+async function permissionStates(names) {
   const states = {};
-  for (const name of PERMISSIONS) {
+  for (const name of Array.isArray(names) ? names : []) {
+    if (typeof name !== "string" || !name) continue;
     try {
       const result = await navigator.permissions.query({ name });
       states[name] = ["granted", "denied", "prompt"].includes(result.state) ? result.state : "unavailable";
@@ -30,7 +35,7 @@ function thirdPartyHosts() {
 // permission granted after document_idle must not look stuck on "prompt".
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "webguard.probePermissions") return false;
-  permissionStates()
+  permissionStates(message.names)
     .then((states) => sendResponse({ permissionStates: states }))
     .catch(() => sendResponse({ permissionStates: null }));
   return true;
@@ -40,7 +45,6 @@ void (async () => {
   try {
     await chrome.runtime.sendMessage({
       type: "webguard.siteObservation",
-      permissionStates: await permissionStates(),
       thirdPartyHosts: thirdPartyHosts()
     });
   } catch (error) {

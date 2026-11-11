@@ -12,7 +12,7 @@ let blockingToggleBusy = false;
 // than left on the page as boxes saying "select a site".
 const SITE_ONLY_SECTIONS = ["cookies", "permissions", "domain", "suspicious", "breach"];
 const PERMISSION_STATE_LABELS = { granted: "allowed", denied: "not permitted", prompt: "not given" };
-const PERMISSION_SETTING_LABELS = { allow: "Allow", ask: "Ask", block: "Block" };
+const PERMISSION_SETTING_LABELS = { allow: "Allow", ask: "Ask (Chrome default)", block: "Block" };
 
 const el = (id) => document.getElementById(id);
 
@@ -31,8 +31,12 @@ function listItem(value) {
   return text("li", value);
 }
 
+// Names come from the page at runtime ("clipboard-read", "screen-wake-lock"),
+// so labels are derived rather than looked up in a list that would go stale.
 function permissionLabel(name) {
-  return `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+  const words = String(name).split("-").filter(Boolean);
+  if (words.length === 0) return String(name);
+  return [words[0].charAt(0).toUpperCase() + words[0].slice(1), ...words.slice(1)].join(" ");
 }
 
 /** A retention value is stored in hours but only ever shown in whole days. */
@@ -587,33 +591,39 @@ async function loadSite(hostname) {
   }
 }
 
-/** Paints the four permission rows from a page report or a live refresh. */
+/**
+ * Paints one row per permission this site actually asked for (see
+ * content/permission-observer.js), from a page report or a live refresh.
+ * A permission Chrome cannot store a per-site setting for still gets its state
+ * shown, with the reason it has no dropdown.
+ */
 function renderSitePermissions(permissions, permissionSettings) {
   const permissionsList = el("permissions-list");
   clear(permissionsList);
   const permissionNames = Object.keys(permissions ?? {});
-  const reportablePermissions = permissionNames.filter((name) => {
-    const state = permissions[name];
-    return state && state !== "unavailable";
-  });
   const siteSettings = permissionSettings?.settings ?? {};
-  if (reportablePermissions.length === 0) {
-    permissionsList.textContent = "No usable permission data for this site.";
+  if (permissionNames.length === 0) {
+    permissionsList.textContent = "This site doesn't require any permission yet.";
     return;
   }
-  for (const name of reportablePermissions) {
+  for (const name of permissionNames) {
     const state = permissions[name];
-    const label = PERMISSION_STATE_LABELS[state] ?? "not given";
+    const label = state === "unavailable" ? "Chrome did not report a state" : (PERMISSION_STATE_LABELS[state] ?? "not given");
     const row = document.createElement("li");
     row.className = "permission-row";
     row.append(text("span", `${permissionLabel(name)}: ${label}`));
 
     // Chrome persists allow/ask/block per site; the state above is what the
     // page currently reported, which can differ until it asks again.
+    const setting = siteSettings[name];
+    if (!setting) {
+      row.append(text("span", "Chrome has no per-site setting for this one.", "hint"));
+      permissionsList.append(row);
+      continue;
+    }
     const select = document.createElement("select");
     select.id = `permission-${name}`;
     select.setAttribute("aria-label", `${permissionLabel(name)} setting for this site`);
-    const setting = siteSettings[name];
     for (const value of ["allow", "ask", "block"]) {
       const option = document.createElement("option");
       option.value = value;
@@ -621,7 +631,7 @@ function renderSitePermissions(permissions, permissionSettings) {
       option.selected = (setting ?? "ask") === value;
       select.append(option);
     }
-    select.disabled = !setting || setting === "unavailable";
+    select.disabled = setting === "unavailable";
     select.addEventListener("change", () => { void savePermission(name, select); });
     row.append(select);
     permissionsList.append(row);
@@ -781,9 +791,15 @@ async function savePermission(permission, select) {
   if (state.target !== host) return;
   select.disabled = false;
   if (result?.status === "ok") await loadSite(host);
-  el("permissions-status").textContent = result?.status === "ok"
-    ? `${permissionLabel(permission)} is now "${setting}" for ${host}.`
-    : (result?.reason ?? "That permission could not be changed.");
+  if (result?.status !== "ok") {
+    el("permissions-status").textContent = result?.reason ?? "That permission could not be changed.";
+    return;
+  }
+  // "Ask" withdraws WebGuard's rule, so Chrome's own value (which may already
+  // be Allow from the reader answering the prompt) takes over again.
+  el("permissions-status").textContent = setting === "ask"
+    ? `${permissionLabel(permission)}: WebGuard no longer overrides ${host}, so Chrome's own setting applies.`
+    : `${permissionLabel(permission)} is now "${setting}" for ${host}.`;
 }
 
 /** Applies the site picker to every panel, then re-renders the summary. */

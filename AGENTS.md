@@ -17,6 +17,7 @@ file is for whoever (human or AI) changes the code.
    in this file (privacy contract, rule budgets, counting semantics) before planning.
 5. **Do the work** in small steps, verifying with the narrowest useful check
    (`node --test tests/<file>.test.mjs`, `node --check <file>`, `npm run build:data`).
+   If the request is ambiguous, stop and ask (rule 8) before writing code.
 6. **Before finishing, update the record.** Add a dated entry under "Recent changes"
    with what changed, what was verified and what is still open. If the version, rules,
    data dates, retention default, permissions or test count changed, run
@@ -78,6 +79,20 @@ them. Do not edit inside the markers by hand.
    hostnames only, never full URLs, query strings or page content. Any new outbound
    network request must be justified, user-visible in the README, and optional where
    possible.
+8. **Never assume — check the files, then ask.** A short request ("fix the bug",
+   "make it better", "do the same for X") does not say which bug, which screen or
+   which behaviour is meant. Read the code and the last hand-off first. If the files
+   do not settle it, ask one short, specific question and wait for the answer instead
+   of picking the reading that happens to suit the implementation. Guessing wrong
+   costs the user more time than the question does. The same applies to expected
+   behaviour: quote the code or ask, never "probably it should be like this".
+9. **Verify in the real browser on a real site.** A unit test with fake Chrome APIs
+   does not prove the extension works. Every UI or extension-behaviour change also gets
+   `npm test` (which loads the unpacked extension in real Chrome) and, where the
+   feature touches live sites, one real page in a real Chrome profile: navigate, use
+   the feature, then read the extension's own pages. Say which real site was used and
+   what it showed. If a real Chrome run is impossible, say so instead of implying it
+   happened.
 
 ## Commands
 
@@ -113,11 +128,13 @@ background/
   history-store.mjs            Hostname-only visit records + top-level navigation recorder
   alarms.mjs                   Hourly visit-record/count pruning alarm
   messages.mjs                 Validates content-script observations and stores them
-  permission-auditor.mjs       Permission state normalization
+  permission-auditor.mjs       Permission name/state normalization (dynamic, no fixed list)
   permission-settings.mjs      Chrome per-site allow/ask/block read + write
   site-probe.mjs               Live page permission probe (dashboard + popup)
 content/
   content-script.js            Reads permission states + third-party hosts (idle)
+  permission-bridge.js         Isolated world: forwards observed permission requests (start)
+  permission-observer.js       Page world: names the permissions the site asks for (start)
   cosmetic-filter.js           Element hiding at document_start (three layers)
 lib/                           Pure, dependency-injected logic shared by all contexts
   host-match.mjs               normalizeHost, candidateHosts, registrableDomain, allowlist
@@ -235,6 +252,42 @@ allowlisted, including on an already-open page (`storage.onChanged`).
   (`storageArea`, `cookiesApi`, `fetchImpl`, `dnr`, `tabs`) as arguments so tests can
   run without Chrome.
 
+### Permissions (read this before touching the Permissions panel)
+
+- There is **no fixed permission list**. `content/permission-observer.js` runs in
+  the page's own world at `document_start`, wraps the requesting APIs
+  (`Notification.requestPermission`, `getUserMedia`/`getDisplayMedia`,
+  `geolocation.*`, `permissions.query`, clipboard, MIDI, wake lock, storage access,
+  pointer lock, fonts, idle, screen details, sensors, `PaymentRequest`) and posts the
+  names it sees.
+- `content/permission-bridge.js` (isolated, also `document_start`, declared **before**
+  the observer so it is listening) forwards each new name to the worker, which stores
+  it per hostname (`siteObservations[host].requestedPermissions`). Names are validated
+  for shape only — never against an allowlist — so an unknown permission still appears.
+- The dashboard shows exactly the requested names, never a default set. State is read
+  live by `content-script.js` for those names only, and with no requested names the
+  panel says "This site doesn't require any permission yet."
+- Allow/Ask/Block is offered for every requested name Chrome can store a per-site
+  setting for — the type list comes from `chrome.contentSettings` at runtime via
+  `contentSettingTypes()` in `background/permission-settings.mjs`, so it is not a
+  shipped four and a newer Chrome that adds a type needs no code change. Only name
+  mapping is fixed: `geolocation` → `location`, `pointer-lock` → `mouselock`, and a
+  dashed name falls back to its first segment (`clipboard-read` → `clipboard`), because
+  Chrome stores one setting there. A name with no Chrome type keeps its row and says
+  Chrome has no per-site setting for it.
+- `UNSAFE_CONTENT_SETTING_TYPES` (fullscreen, mouselock) exists because reading those
+  two deprecated types crashes the extension's own pages in current Chrome. Do not
+  remove it and do not "test" them by calling `get` — that is the crash. Only the
+  panel is affected: their rows stay state-only.
+- Overrides are tracked per Chrome type (`permissionOverrides[type][host]`), not per
+  page permission name, so the two clipboard names cannot fight over one setting.
+  `PERMISSION_RULES_VERSION` is 3; version 2 files stored them per permission name.
+- Observation storage is a read-modify-write and a page can request several
+  permissions in one tick, so writes go through a promise queue. Do not remove it;
+  without it the last message wins and earlier names disappear.
+- A page can post a fabricated permission name; the worst outcome is an extra row,
+  because every state is read back from Chrome.
+
 ### Messaging
 
 Popup and dashboard talk to the worker with `chrome.runtime.sendMessage`. Message
@@ -331,6 +384,58 @@ pruning) and test both the store and the effect.
 
 One short entry per session: what changed, what was verified, what is open. Git has
 the full diff; this section is the story a zero-context session needs.
+
+### 2026-11-12
+- Fixed the per-site permission control: choosing "Ask" no longer writes an
+  `ask` rule. Chrome treats `ask` as its default, and an extension-written ask rule
+  keeps the site prompting on every reload and wins over the reader's Allow in the
+  prompt, so the popup dashboard kept showing the old state. "Ask" now removes
+  WebGuard's rule for that site (`clear({scope:"regular"})`, since Chrome has no
+  per-site clear) and writes the remaining sites' rules back from a tracked
+  `permissionOverrides` map in `chrome.storage.local`.
+- The rewrite only re-applies tracked rules that Chrome still holds as WebGuard wrote
+  them, so a value changed in Chrome's own site settings is not silently overwritten.
+- `PERMISSION_RULES_VERSION = 2`: the worker clears the four content-setting types
+  once on start and resets the map, which releases sites pinned by the previous
+  build's ask rules.
+- Verified: `tests/permission-settings.test.mjs` (13 tests) plus a real-Chrome probe
+  that allowed, asked and migrated a site through the live message API;
+  `npm test` 300/300 pass. The e2e permission test now asserts the ask wording and
+  that Chrome's own setting is in charge again.
+- Permissions are no longer a fixed four. `content/permission-observer.js` (page
+  world) names whatever the site actually asks for and `content/permission-bridge.js`
+  forwards it; the dashboard lists exactly those rows, never a default set.
+- Fixed a lost-update bug this exposed: four requests in one tick mean four
+  concurrent read-modify-write messages, and only the last name survived. Writes to
+  `siteObservations` now go through a promise queue, with a regression test.
+- Allow/Ask/Block is no longer limited to four names. The Chrome types are read from
+  `chrome.contentSettings` at runtime, so `clipboard`, `popups`, `images`, `javascript`,
+  `cookies` and any type a newer Chrome adds all get a site control, and overrides are
+  now tracked per Chrome type (`PERMISSION_RULES_VERSION` 3, which clears the old
+  per-name rules once on start). A name Chrome has no setting for keeps its row and
+  says so. The empty panel reads "This site doesn't require any permission yet."
+- Two real-Chrome discoveries, both reproduced: reading the deprecated `fullscreen`
+  and `mouselock` content-setting types kills the calling renderer (`Target crashed`,
+  Chrome 156 bundled with Playwright), which is also why clearing every listed type on
+  worker start crashed the dashboard and popup. Those two types are now in
+  `UNSAFE_CONTENT_SETTING_TYPES` and stay state-only, and the one-time migration clears
+  only the four legacy types plus whatever the tracked map remembers.
+- The observer also wraps `requestFullscreen`, `webkitRequestFullscreen`,
+  `requestPointerLock` and `window.open`, so fullscreen, pointer lock and popups are
+  named when a site asks; `pointer-lock` maps to Chrome's `mouselock`.
+- Verified: `npm test` 315/315 pass, including the live-Chrome suite and an e2e test
+  where `clipboard-read` (never in a shipped list) gets a working control while `midi`
+  shows the "no per-site setting" note. Real-site run on https://permission.site in
+  Chrome 156: clicking its Camera and Microphone buttons produced `allowed` rows with
+  Allow/Ask/Block dropdowns, its MIDI button produced a state-only row, and Fullscreen /
+  Pointer Lock produced rows without a control and no crash. Live NDTV probes for the
+  earlier fix still hold.
+- Automation limits: Playwright's bundled Chromium (156) is the only browser that loads
+  the unpacked extension here; the installed Chrome 157 ignores `--load-extension`, so
+  it cannot be driven by the tests.
+- Open: only permissions a page requests through a JS API are observable, and only in
+  the top frame. A grant made from Chrome's own settings for a site that never asks is
+  invisible, and so is a `Permissions-Policy` header alone.
 
 ### 2026-11-11
 - Made automatic registry lookup the documented behaviour instead of a bug: RDAP data

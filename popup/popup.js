@@ -27,12 +27,12 @@ const blockedPanel = document.getElementById("blocked-panel");
 const blockedList = document.getElementById("blocked-list");
 const blockedSource = document.getElementById("blocked-source");
 
-const PERMISSION_LABELS = {
-  camera: "Camera",
-  microphone: "Microphone",
-  geolocation: "Location",
-  notifications: "Notifications"
-};
+/** Names are whatever the site asked Chrome for, so labels are derived. */
+function permissionLabel(name) {
+  const words = String(name).split("-").filter(Boolean);
+  if (words.length === 0) return String(name);
+  return [words[0].charAt(0).toUpperCase() + words[0].slice(1), ...words.slice(1)].join(" ");
+}
 
 // A popup is 320px wide, so a long cookie list would be a scroll wall. The
 // dashboard shows the complete list.
@@ -212,7 +212,9 @@ function renderPermissions(details) {
   permissionsList.textContent = "";
 
   if (!details.permissionStatesAvailable) {
-    addListItem(permissionsList, "Permission details are unavailable on this page.");
+    addListItem(permissionsList, (details.requestedPermissions ?? []).length > 0
+      ? "Permission details are unavailable on this page."
+      : "This site doesn't require any permission yet.");
     return;
   }
 
@@ -223,8 +225,7 @@ function renderPermissions(details) {
   }
 
   for (const [name] of granted) {
-    const label = PERMISSION_LABELS[name] ?? name.charAt(0).toUpperCase() + name.slice(1);
-    addListItem(permissionsList, `${label} — this site can use it right now.`);
+    addListItem(permissionsList, `${permissionLabel(name)} — this site can use it right now.`);
   }
 }
 

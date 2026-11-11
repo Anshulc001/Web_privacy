@@ -2,22 +2,24 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { findTabForHost, probePagePermissions, probeTabPermissionStates } from "../background/site-probe.mjs";
 
-const granted = { camera: "granted", microphone: "prompt", geolocation: "denied", notifications: "granted" };
+const states = { camera: "granted", microphone: "prompt", "screen-wake-lock": "denied" };
 
 describe("probeTabPermissionStates", () => {
-  it("returns the content script's fresh states", async () => {
+  it("asks the content script only about the names it was given", async () => {
     const tabsApi = { async sendMessage(tabId, message) {
       assert.equal(tabId, 7);
       assert.equal(message.type, "webguard.probePermissions");
-      return { permissionStates: granted };
+      assert.deepEqual(message.names, ["camera", "microphone", "screen-wake-lock"]);
+      return { permissionStates: states };
     } };
-    assert.deepEqual(await probeTabPermissionStates(tabsApi, 7, {}), granted);
+    assert.deepEqual(await probeTabPermissionStates(tabsApi, 7, ["camera", "microphone", "screen-wake-lock"]), states);
   });
 
-  it("falls back when the page has no content script", async () => {
+  it("reports nothing when no names are asked about or the page has no content script", async () => {
     const tabsApi = { async sendMessage() { throw new Error("Receiving end does not exist"); } };
-    assert.deepEqual(await probeTabPermissionStates(tabsApi, 7, { camera: "prompt" }), { camera: "prompt" });
-    assert.equal(await probeTabPermissionStates(tabsApi, -1, null), null);
+    assert.equal(await probeTabPermissionStates(tabsApi, 7, ["camera"]), null);
+    assert.equal(await probeTabPermissionStates(tabsApi, 7, []), null);
+    assert.equal(await probeTabPermissionStates(tabsApi, -1, ["camera"]), null);
   });
 });
 
@@ -32,19 +34,19 @@ describe("probePagePermissions", () => {
       },
       async sendMessage(tabId) {
         assert.equal(tabId, 2);
-        return { permissionStates: granted };
+        return { permissionStates: states };
       }
     };
-    const result = await probePagePermissions(tabsApi, "www.example.com", null);
+    const result = await probePagePermissions(tabsApi, "www.example.com", ["camera"]);
     assert.equal(result.tab.id, 2);
-    assert.deepEqual(result.permissionStates, granted);
+    assert.deepEqual(result.permissionStates, states);
   });
 
-  it("returns the stored fallback when the site is not open", async () => {
+  it("returns no states when the site is not open", async () => {
     const tabsApi = { async query() { return [{ id: 1, url: "https://other.example/" }]; } };
-    const result = await probePagePermissions(tabsApi, "example.com", { camera: "prompt" });
+    const result = await probePagePermissions(tabsApi, "example.com", ["camera"]);
     assert.equal(result.tab, null);
-    assert.deepEqual(result.permissionStates, { camera: "prompt" });
+    assert.equal(result.permissionStates, null);
     assert.equal(await findTabForHost(tabsApi, "example.com"), null);
   });
 });

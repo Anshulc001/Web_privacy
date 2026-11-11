@@ -29,6 +29,9 @@ test("keeps a strict extension-page CSP", () => {
 test("registers the isolated content scripts for supported web pages", () => {
   assert.deepEqual(manifest.content_scripts, [
     { matches: ["<all_urls>"], js: ["content/cosmetic-filter.js"], run_at: "document_start" },
+    // The bridge must be listening before the page-world observer can report.
+    { matches: ["<all_urls>"], js: ["content/permission-bridge.js"], run_at: "document_start" },
+    { matches: ["<all_urls>"], js: ["content/permission-observer.js"], run_at: "document_start", world: "MAIN" },
     { matches: ["<all_urls>"], js: ["content/content-script.js"], run_at: "document_idle" }
   ]);
 });

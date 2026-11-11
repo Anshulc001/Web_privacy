@@ -14,7 +14,7 @@ import {
 import { scoreRisk } from "../lib/risk-score.mjs";
 import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs";
 import { inspectUrl } from "../lib/url-checks.mjs";
-import { normalizePermissionStates } from "./permission-auditor.mjs";
+import { normalizePermissionStates, normalizeRequestedPermissions } from "./permission-auditor.mjs";
 import { readSitePermissionSettings } from "./permission-settings.mjs";
 import { probePagePermissions } from "./site-probe.mjs";
 import { DEFAULT_SETTINGS } from "../lib/storage-settings.mjs";
@@ -27,6 +27,15 @@ function pickDays(map, dates) {
     if (map && Object.prototype.hasOwnProperty.call(map, date)) picked[date] = map[date];
   }
   return picked;
+}
+
+/**
+ * The rows to show: what the site asked for, plus any permission Chrome already
+ * holds a decision for (an answer given before this build watched requests).
+ * Chrome's own "ask" is not a decision, so it adds no row on its own.
+ */
+function permissionRows(requested) {
+  return normalizeRequestedPermissions(requested);
 }
 
 export function createDashboardService({ storageArea, settingsStore, historyStore, observationStore, cookiesApi, tabsApi, contentSettings = null, blockingManager = null, blockingCounter = null }) {
@@ -140,11 +149,16 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         cookies = { status: "unavailable", reason: String(error.message ?? error), cookies: [] };
       }
 
-      // Ask the open page for its live state; its stored observation was written
-      // once at document_idle and can predate a permission the reader granted.
-      const probe = await probePagePermissions(tabsApi, host, observation?.permissionStates ?? null);
-      const permissionStates = normalizePermissionStates(probe.permissionStates);
-      const permissionSettings = await readSitePermissionSettings(contentSettings, host, { primaryUrl: probe.tab?.url });
+      // Only the permissions this site actually asked for get a row. The open
+      // page is asked for their live state; its stored names were recorded when
+      // the request happened.
+      const requested = normalizeRequestedPermissions(observation?.requestedPermissions ?? []);
+      const probe = await probePagePermissions(tabsApi, host, requested);
+      const permissionSettings = await readSitePermissionSettings(contentSettings, host, {
+        primaryUrl: probe.tab?.url,
+        names: requested
+      });
+      const permissionStates = normalizePermissionStates(probe.permissionStates, permissionRows(requested));
       const inspected = inspectUrl(pageUrl ?? `https://${host}/`);
       const threat = checkHostForThreats(host, await safeGet(THREAT_DATA_KEY));
       const domainInfo = await cachedDomainInfo(storageArea, host);
@@ -177,12 +191,18 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       const host = normalizeHostname(hostname);
       if (!host) return { status: "unavailable", reason: "A hostname is required." };
       const observation = await observationStore.get(host);
-      const probe = await probePagePermissions(tabsApi, host, observation?.permissionStates ?? null);
+      const requested = normalizeRequestedPermissions(observation?.requestedPermissions ?? []);
+      const probe = await probePagePermissions(tabsApi, host, requested);
+      const permissionSettings = await readSitePermissionSettings(contentSettings, host, {
+        primaryUrl: probe.tab?.url,
+        names: requested
+      });
       return {
         status: "ok",
         hostname: host,
-        permissions: normalizePermissionStates(probe.permissionStates),
-        permissionSettings: await readSitePermissionSettings(contentSettings, host, { primaryUrl: probe.tab?.url })
+        requestedPermissions: requested,
+        permissions: normalizePermissionStates(probe.permissionStates, permissionRows(requested)),
+        permissionSettings
       };
     },
 

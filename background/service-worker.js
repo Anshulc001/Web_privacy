@@ -20,10 +20,10 @@ import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs"
 import { TRACKING_PARAM_RULE_ID } from "../lib/tracking-params.mjs";
 import { inspectUrl } from "../lib/url-checks.mjs";
 import { createHistoryStore, createNavigationRecorder, hostnameFromUrl } from "./history-store.mjs";
-import { createObservationStore, validateSiteObservation } from "./messages.mjs";
-import { setSitePermission } from "./permission-settings.mjs";
+import { createObservationStore, validatePermissionRequest, validateSiteObservation } from "./messages.mjs";
+import { ensurePermissionRulesVersion, setSitePermission } from "./permission-settings.mjs";
 import { probeTabPermissionStates } from "./site-probe.mjs";
-import { normalizePermissionStates } from "./permission-auditor.mjs";
+import { normalizePermissionStates, normalizeRequestedPermissions } from "./permission-auditor.mjs";
 import { createSettingsStore } from "../lib/storage-settings.mjs";
 
 const historyStore = createHistoryStore(chrome.storage.local);
@@ -192,7 +192,7 @@ async function observationFor(tabId, hostname) {
     const thirdPartyHosts = [...new Set((Array.isArray(frames) ? frames : [])
       .map((frame) => hostnameFromUrl(frame?.url))
       .filter((host) => host && host !== hostname))];
-    if (thirdPartyHosts.length > 0) return { thirdPartyHosts, permissionStates: {} };
+    if (thirdPartyHosts.length > 0) return { thirdPartyHosts, requestedPermissions: [] };
   } catch {
     // Frame records are a nicety; without them the cookie list is just first-party.
   }
@@ -207,10 +207,12 @@ async function currentSitePrivacy(tabId) {
   const observation = await observationFor(tabId, hostname);
   const settings = await activeSettings();
   const cookies = await inspectSiteCookies(chrome.cookies, hostname, observation?.thirdPartyHosts ?? []);
-  // Probe the page itself: the stored observation is written once at
-  // document_idle and would hide a permission granted after that.
+  // Only what this site asked for, and only its live state: the stored names
+  // were recorded at request time, the state is read from the page now.
+  const requestedPermissions = normalizeRequestedPermissions(observation?.requestedPermissions ?? []);
   const permissionStates = normalizePermissionStates(
-    await probeTabPermissionStates(chrome.tabs, tabId, observation?.permissionStates ?? null)
+    await probeTabPermissionStates(chrome.tabs, tabId, requestedPermissions),
+    requestedPermissions
   );
   const reported = Object.entries(permissionStates).filter(([, state]) => state && state !== "unavailable");
   const stored = await chrome.storage.local.get(BREACH_DATA_KEY);
@@ -218,6 +220,7 @@ async function currentSitePrivacy(tabId) {
     hostname,
     cookies,
     permissions: permissionStates,
+    requestedPermissions,
     permissionStatesAvailable: reported.length > 0,
     blocking: await blockingCounter.summary(tabId),
     blockingEnabled: settings.blockingEnabled,
@@ -318,6 +321,11 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
     await observationStore.save(observation);
     return { ok: true };
   }
+  const permissionRequest = validatePermissionRequest(message, sender, chrome.runtime.id);
+  if (permissionRequest) {
+    await observationStore.recordPermissions(permissionRequest.hostname, permissionRequest.names);
+    return { ok: true };
+  }
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL("")) || !message || typeof message !== "object") return undefined;
   if (message.type === "webguard.currentSitePrivacy") return currentSitePrivacy(message.tabId);
   if (message.type === "webguard.setBlockingEnabled") return blockingManager.setEnabled(message.enabled);
@@ -339,7 +347,9 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
   if (message.type === "webguard.siteReport") return dashboardService.siteReport({ hostname: message.hostname, tabId: message.tabId });
   if (message.type === "webguard.sitePermissions") return dashboardService.sitePermissions(message);
   if (message.type === "webguard.setPermission") {
-    return setSitePermission(chrome.contentSettings, message.hostname, message.permission, message.setting);
+    return setSitePermission(chrome.contentSettings, message.hostname, message.permission, message.setting, {
+      storageArea: chrome.storage.local
+    });
   }
   if (message.type === "webguard.updateSettings") return dashboardService.updateSettings(message.patch);
   if (message.type === "webguard.clearSiteCookies") return dashboardService.clearSiteCookies(message.hostname);
@@ -385,6 +395,12 @@ async function ensureTrackingParamRule() {
 }
 
 void ensureTrackingParamRule().catch((error) => console.error("WebGuard could not install the tracking-parameter rule.", error));
+
+// Earlier builds wrote "ask" rules for a site, which kept it prompting and
+// outranked the reader's answer in Chrome's prompt. Release those rules once.
+void ensurePermissionRulesVersion(chrome.contentSettings, chrome.storage.local).catch((error) => {
+  console.error("WebGuard could not reset the previous permission rules.", error);
+});
 
 void chrome.alarms.create(DATA_SYNC_ALARM, { periodInMinutes: 1_440, persistAcrossSessions: true }).catch((error) => {
   console.error("WebGuard could not schedule data sync.", error);

@@ -101,6 +101,16 @@ describe("WebGuard end to end", () => {
         <ins class="adsbygoogle">Ad</ins>
         <div id="ad-label-slot"><span class="ad-caption">Advertisement</span></div>
         <script src="/control.js"></script>
+        <script>
+          // The dashboard lists only the permissions a site actually asked for,
+          // so this page asks for four the way a real site does. The request is
+          // observed at document_start and reported to the worker.
+          void (async () => {
+            for (const name of ["camera", "microphone", "geolocation", "notifications"]) {
+              try { await navigator.permissions.query({ name }); } catch {}
+            }
+          })();
+        </script>
         ${TRACKERS.map((url) => `<script src="${url}"></script>`).join("\n")}
       </body></html>`);
     });
@@ -404,13 +414,17 @@ describe("WebGuard end to end", () => {
       { timeout: 15_000 }
     );
 
-    // Reset to the browser default so later tests are not affected.
+    // "Ask" is Chrome's default, so it withdraws WebGuard's rule instead of
+    // writing an ask rule (which would keep the site prompting past an Allow).
     await page.selectOption("#permission-camera", "ask");
     await page.waitForFunction(
-      () => document.getElementById("permissions-status")?.textContent?.includes("ask"),
+      () => document.getElementById("permissions-status")?.textContent?.includes("no longer overrides"),
       null,
       { timeout: 15_000 }
     );
+    const withdrawn = await page.evaluate(async (host) =>
+      (await chrome.contentSettings.camera.get({ primaryUrl: `https://${host}/` })).setting, target);
+    assert.strictEqual(withdrawn, "ask", "Ask must leave Chrome's own setting in charge");
     await page.close();
   });
 
@@ -443,6 +457,42 @@ describe("WebGuard end to end", () => {
       null,
       { timeout: 20_000 }
     );
+    await page.close();
+  });
+
+  it("shows a permission the extension does not ship a list entry for", async () => {
+    const page = await context.newPage();
+    await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => document.getElementById("status")?.textContent === "Loaded.", null, { timeout: 25_000 });
+    await seedPublicDomain(page);
+
+    // Exactly what the observer stores when a page asks for these two: no
+    // allowlist of known names is involved, so the rows prove the path is dynamic.
+    await page.evaluate(async () => {
+      const stored = await chrome.storage.local.get("siteObservations");
+      const all = stored.siteObservations ?? {};
+      all["example.com"] = {
+        ...(all["example.com"] ?? { thirdPartyHosts: [] }),
+        requestedPermissions: ["clipboard-read", "midi"],
+        updatedAt: Date.now()
+      };
+      await chrome.storage.local.set({ siteObservations: all });
+    });
+
+    await pickTarget(page, ["example.com"]);
+    await page.waitForFunction(
+      () => document.getElementById("permissions-list")?.innerText?.toLowerCase().includes("clipboard read"),
+      null,
+      { timeout: 20_000 }
+    );
+    const rows = (await page.locator("#permissions-list").innerText()).toLowerCase();
+    assert.ok(rows.includes("midi"), `a requested permission outside the old four must be listed, got "${rows}"`);
+    // clipboard-read is not one of the names this extension used to know, but
+    // Chrome has a clipboard setting, so the row must be editable; the control is
+    // found from Chrome's own API surface, not from a list of four.
+    assert.strictEqual(await page.locator("#permission-clipboard-read").count(), 1, "clipboard-read must get a site control");
+    assert.strictEqual(await page.locator("#permissions-list select").count(), 1, "only the permission Chrome can store a setting for gets a control");
+    assert.ok(rows.includes("no per-site setting"), `the midi row must explain the missing control, got "${rows}"`);
     await page.close();
   });
 
@@ -849,11 +899,13 @@ describe("WebGuard end to end", () => {
       (await chrome.storage.local.get("siteObservations")).siteObservations ?? {});
     await page.close();
 
-    const entry = observations["example.com"] ?? observations["127.0.0.1"];
+    const entry = observations["127.0.0.1"] ?? observations["example.com"];
     assert.ok(entry, `the content script must have stored an observation, got ${Object.keys(observations)}`);
     assert.ok(Array.isArray(entry.thirdPartyHosts), "third-party hosts must be recorded");
+    // The page asked for these four, and the observer must have recorded exactly
+    // what it asked for rather than a list the extension ships.
     for (const name of ["camera", "microphone", "geolocation", "notifications"]) {
-      assert.ok(name in entry.permissionStates, `permission ${name} must be recorded`);
+      assert.ok(entry.requestedPermissions.includes(name), `permission ${name} must be recorded as requested`);
     }
     assert.ok(!entry.thirdPartyHosts.includes("example.com"), "a site is not its own third party");
   });
