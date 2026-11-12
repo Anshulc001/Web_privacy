@@ -10,12 +10,9 @@ const MAX_SOURCE_BYTES = 20_000_000;
 // Chrome guarantees 30,000 static rules per extension. The host rules are the
 // bulk of that; path rules get the remainder, so the total can never outgrow the
 // budget and leave the ruleset rejected.
-const MAX_HOST_RULES = 25_000;
-// Host rules that carry an option ("$third-party", "$domain=", "$script") cannot
-// be widened to a plain ||host^ block, so they are published as their own rules
-// with the matching DNR condition. They get a smaller slice of the budget because
-// the wide rules cover the hosts that are trackers everywhere.
-const MAX_QUALIFIED_HOST_RULES = 3_000;
+// One budget for every host-level rule, wide or option-qualified. 28,000 leaves
+// room for the path rules below inside the 30,000 static limit.
+const HOST_RULE_BUDGET = 28_000;
 const MAX_PATH_RULES = 4_500;
 const MAX_STATIC_RULES = 30_000;
 const RESOURCE_TYPES = ["main_frame", "sub_frame", "script", "image", "xmlhttprequest", "media", "font", "stylesheet", "ping", "other"];
@@ -189,57 +186,105 @@ function scoreHost(host) {
   return { mentions, labels, length: host.length, host };
 }
 
-// Rank all candidate hosts by EasyList mention frequency, then by specificity.
-const ranked = [...hosts]
-  .map(scoreHost)
-  .sort((a, b) => b.mentions - a.mentions || a.labels - b.labels || a.length - b.length || a.host.localeCompare(b.host))
-  .map((entry) => entry.host);
+// Relative to the lists. A host is mentioned n times; both kinds of rule for the
+// same host deserve the same weight.
+function mentionsOf(host) {
+  const domain = registrableDomain(host);
+  return domain ? domainMentions.get(domain) ?? 0 : 0;
+}
 
-// Always include the known tracker hosts the lists actually declare, even if
-// they did not rank in the top EasyList mentions. They displace the lowest-ranked
-// hosts so the total never exceeds MAX_HOST_RULES. Taking the forced entries out
-// of the ranking before filling the rest means a forced host can never be sliced
-// away by the budget.
-const forced = [...MUST_BLOCK_DOMAINS].filter((host) => hosts.has(host)).sort();
-if (forced.length > MAX_HOST_RULES) throw new Error("Forced host rules exceed the static ruleset budget.");
-const forcedSet = new Set(forced);
-const remaining = ranked.filter((host) => !forcedSet.has(host));
-
-const selected = [
-  ...forced,
-  ...remaining.slice(0, MAX_HOST_RULES - forced.length)
-].sort();
-
-if (selected.length === 0) throw new Error("No rules survived selection.");
-
-// Option-qualified rules are ranked the same way as hosts, by how often the list
-// mentions their registrable domain, so the small qualified budget goes to the
-// trackers the lists care about most. A host already blocked widely needs no
-// second rule: the wide one is strictly broader.
-const selectedHosts = new Set(selected);
-const qualifiedBudget = Math.min(
-  MAX_QUALIFIED_HOST_RULES,
-  MAX_STATIC_RULES - selected.length - Math.min(MAX_PATH_RULES, 1_000)
-);
-// Two filter spellings can compile to the same condition (`$image,script` and
-// `$script,image`), so entries are de-duplicated again on the canonical form
-// rather than on their source text.
-const canonicalByHostCondition = new Map();
+// Wide rules and option-qualified rules compete for **one** host-rule budget.
+//
+// They used to compete for two, and that lost real coverage: the lists say
+// `||scorecardresearch.com^$third-party`, the previous build dropped the option and
+// blocked the host outright, and the new build narrowed it correctly but ranked it
+// in a separate 3,000-slot pool of leftovers, so the host vanished from the ruleset
+// entirely and the tracker was no longer blocked. Ranking every candidate together
+// keeps the host, just with the condition the list asked for. The end-to-end test
+// for that host is what caught it.
+// A known tracker is forced in whichever form the list declares it. Before, only
+// hosts with a wide rule were forced, so a host the list narrowed to
+// `$third-party` (scorecardresearch.com is one) lost its guarantee and fell out of
+// the ranking entirely.
+const qualifiedByHost = new Map();
 for (const entry of qualifiedRules.values()) {
-  if (selectedHosts.has(entry.host)) continue;
+  const conditions = qualifiedByHost.get(entry.host) ?? [];
+  conditions.push(entry);
+  qualifiedByHost.set(entry.host, conditions);
+}
+
+const forced = [...MUST_BLOCK_DOMAINS].filter((host) => hosts.has(host)).sort();
+const forcedQualified = [];
+const forcedQualifiedKeys = new Set();
+for (const host of [...MUST_BLOCK_DOMAINS].sort()) {
+  if (hosts.has(host)) continue;
+  for (const entry of qualifiedByHost.get(host) ?? []) {
+    const condition = canonicalHostCondition(entry.condition);
+    if (!condition) continue;
+    const key = `${host}|${JSON.stringify(condition)}`;
+    if (forcedQualifiedKeys.has(key)) continue;
+    forcedQualifiedKeys.add(key);
+    forcedQualified.push({ host, condition });
+  }
+}
+if (forced.length + forcedQualified.length > HOST_RULE_BUDGET) throw new Error("Forced host rules exceed the static ruleset budget.");
+const forcedSet = new Set([...forced, ...forcedQualified.map((entry) => entry.host)]);
+
+const candidates = [];
+for (const host of hosts) {
+  if (forcedSet.has(host)) continue;
+  const score = scoreHost(host);
+  candidates.push({ host, condition: null, ...score });
+}
+for (const entry of qualifiedRules.values()) {
+  if (forcedSet.has(entry.host)) continue;
   const condition = canonicalHostCondition(entry.condition);
   if (!condition) {
     droppedOptions.set("unrepresentable-condition", (droppedOptions.get("unrepresentable-condition") ?? 0) + 1);
     continue;
   }
-  const key = `${entry.host}|${JSON.stringify(condition)}`;
-  if (!canonicalByHostCondition.has(key)) canonicalByHostCondition.set(key, { host: entry.host, condition });
+  const score = scoreHost(entry.host);
+  candidates.push({ host: entry.host, condition, ...score });
 }
-const selectedQualified = [...canonicalByHostCondition.values()]
-  .map((entry) => ({ entry, mentions: domainMentions.get(registrableDomain(entry.host)) ?? 0 }))
-  .sort((a, b) => b.mentions - a.mentions || a.entry.host.localeCompare(b.entry.host) || JSON.stringify(a.entry.condition).localeCompare(JSON.stringify(b.entry.condition)))
-  .slice(0, Math.max(0, qualifiedBudget))
-  .map(({ entry }) => entry);
+
+// Ranking: most-mentioned first, then the broader rule for an equally-mentioned
+// host (a wide block covers everything a narrowed one does), then specificity.
+// Two filter spellings can compile to one condition (`$image,script` and
+// `$script,image`), so de-duplication uses the canonical form, not the source text.
+candidates.sort((a, b) =>
+  b.mentions - a.mentions ||
+  Number(Boolean(a.condition)) - Number(Boolean(b.condition)) ||
+  a.labels - b.labels ||
+  a.length - b.length ||
+  a.host.localeCompare(b.host) ||
+  JSON.stringify(a.condition ?? {}) .localeCompare(JSON.stringify(b.condition ?? {}))
+);
+
+const selected = [...forced];
+const selectedQualified = [...forcedQualified];
+const seenRules = new Set(forcedQualifiedKeys);
+const wideHosts = new Set(forced);
+// Forced hosts are already in; the ranking must not add a second rule for them.
+const takenHosts = new Set(forcedSet);
+for (const candidate of candidates) {
+  if (selected.length + selectedQualified.length >= HOST_RULE_BUDGET) break;
+  const key = `${candidate.host}|${candidate.condition ? JSON.stringify(candidate.condition) : ""}`;
+  if (seenRules.has(key)) continue;
+  seenRules.add(key);
+  // A wide rule makes the narrowed ones for the same host redundant.
+  if (wideHosts.has(candidate.host)) continue;
+  if (takenHosts.has(candidate.host)) continue;
+  if (candidate.condition === null) {
+    wideHosts.add(candidate.host);
+    selected.push(candidate.host);
+  } else {
+    selectedQualified.push({ host: candidate.host, condition: candidate.condition });
+  }
+}
+
+selected.sort();
+if (selected.length === 0) throw new Error("No rules survived selection.");
+
 const canonicalQualified = canonicalHostRules(selectedQualified);
 if (canonicalQualified === null) throw new Error("Compiled host-rule conditions are not valid DNR conditions.");
 
