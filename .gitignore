@@ -11,8 +11,11 @@ node_modules/
 playwright-report/
 test-results/
 
-# Built packages
-dist/
+# Built packages. The packaged ZIP is kept in the repo on purpose (the owner asked
+# for the downloadable build to live here); the unzipped folder next to it stays
+# local.
+dist/*
+!dist/webguard-*.zip
 
 # Playwright MCP artifacts
 .playwright-mcp/
