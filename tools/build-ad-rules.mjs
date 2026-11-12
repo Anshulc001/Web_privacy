@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { sha256 } from "../lib/data-integrity.mjs";
+import { canonicalBlockingPayload, canonicalHostCondition, canonicalHostRules, sha256 } from "../lib/data-integrity.mjs";
+import { buildRuleCondition, isWideCondition } from "../lib/filter-options.mjs";
 import { candidateHosts, normalizeHost } from "../lib/host-match.mjs";
 import { ADS_DOMAINS, ANALYTICS_DOMAINS, REPLAY_DOMAINS, SOCIAL_DOMAINS } from "../lib/tracker-categories.mjs";
 
@@ -10,6 +11,11 @@ const MAX_SOURCE_BYTES = 20_000_000;
 // bulk of that; path rules get the remainder, so the total can never outgrow the
 // budget and leave the ruleset rejected.
 const MAX_HOST_RULES = 25_000;
+// Host rules that carry an option ("$third-party", "$domain=", "$script") cannot
+// be widened to a plain ||host^ block, so they are published as their own rules
+// with the matching DNR condition. They get a smaller slice of the budget because
+// the wide rules cover the hosts that are trackers everywhere.
+const MAX_QUALIFIED_HOST_RULES = 3_000;
 const MAX_PATH_RULES = 4_500;
 const MAX_STATIC_RULES = 30_000;
 const RESOURCE_TYPES = ["main_frame", "sub_frame", "script", "image", "xmlhttprequest", "media", "font", "stylesheet", "ping", "other"];
@@ -25,9 +31,10 @@ const HOST_RULE_PATTERNS = [
 
 // A path rule blocks one path on a site that must otherwise keep working
 // (`||example.com/ads/`), which a host rule cannot express: it would take the
-// whole site down. Only rules with no options are kept, because dropping an
-// option such as third-party would widen the block far past what the list asked
-// for.
+// whole site down. Path rules are still only published when they carry no
+// options: the path budget is small, and every option-qualified path rule would
+// need its own condition and its own ranking, so they are counted and dropped
+// rather than widened.
 const PATH_RULE_PATTERNS = [
   /^\|\|([a-z0-9.-]+)(\/[^|$]*)$/i,
   /^\.([a-z0-9.-]+)(\/[^|$]*)$/i
@@ -90,9 +97,15 @@ const lines = text.split(/\r?\n/);
 if (lines.length < 1_000) throw new Error("Source list is unexpectedly small; refusing to build.");
 
 const hosts = new Set();
+// host|condition -> entry. A host can legitimately appear with two different
+// conditions (blocked third-party for one type, fully for another), so the key is
+// the pair, not the host.
+const qualifiedRules = new Map();
 const pathRules = new Set();
 const exceptionKeys = new Set();
 const domainMentions = new Map();
+// Option names that DNR cannot express on a block rule. Counted, never widened.
+const droppedOptions = new Map();
 
 for (const rawLine of lines) {
   const line = rawLine.trim();
@@ -100,6 +113,7 @@ for (const rawLine of lines) {
 
   // Options come after "$"; only the pattern part decides whether this is a host rule.
   const hasOptions = line.includes("$");
+  const optionText = hasOptions ? line.slice(line.indexOf("$") + 1) : "";
   const patternPart = line.split("$")[0];
 
   // An exception withdraws one pattern; a block rule that repeats it must not be
@@ -114,9 +128,26 @@ for (const rawLine of lines) {
   for (const pattern of HOST_RULE_PATTERNS) {
     const match = pattern.exec(patternPart);
     if (!match) continue;
-    const host = normalizeHost(match[1]);
-    if (host && !isLoopback(host)) hosts.add(host);
     matchedHostRule = true;
+    const host = normalizeHost(match[1]);
+    // Loopback rules and rules whose options have no DNR equivalent are dropped
+    // as a whole: publishing the host without its condition would block the site
+    // the rule was careful to spare.
+    if (!host || isLoopback(host)) break;
+    const built = buildRuleCondition(optionText, RESOURCE_TYPES);
+    if (built.unsupported) {
+      droppedOptions.set(built.unsupported, (droppedOptions.get(built.unsupported) ?? 0) + 1);
+      break;
+    }
+    // `$~image` over a type list that only contains images, or an option set that
+    // covers every type, compiles to exactly the wide rule. Folding it back keeps
+    // one rule per host instead of two equivalent ones.
+    if (built.isWide || isWideCondition(built.condition, RESOURCE_TYPES)) {
+      hosts.add(host);
+      break;
+    }
+    const conditionKey = `${host}|${JSON.stringify(built.condition)}`;
+    if (!qualifiedRules.has(conditionKey)) qualifiedRules.set(conditionKey, { host, condition: built.condition, conditionKey });
     break;
   }
 
@@ -143,6 +174,12 @@ if (hosts.size === 0) throw new Error("No host-level rules were found.");
 for (const key of exceptionKeys) {
   hosts.delete(key);
   pathRules.delete(key);
+}
+// An exception withdraws the host, whatever condition the block rule carried.
+if (exceptionKeys.size > 0) {
+  for (const [key, entry] of qualifiedRules) {
+    if (exceptionKeys.has(entry.host)) qualifiedRules.delete(key);
+  }
 }
 
 function scoreHost(host) {
@@ -175,7 +212,38 @@ const selected = [
 
 if (selected.length === 0) throw new Error("No rules survived selection.");
 
-const pathBudget = Math.min(MAX_PATH_RULES, MAX_STATIC_RULES - selected.length);
+// Option-qualified rules are ranked the same way as hosts, by how often the list
+// mentions their registrable domain, so the small qualified budget goes to the
+// trackers the lists care about most. A host already blocked widely needs no
+// second rule: the wide one is strictly broader.
+const selectedHosts = new Set(selected);
+const qualifiedBudget = Math.min(
+  MAX_QUALIFIED_HOST_RULES,
+  MAX_STATIC_RULES - selected.length - Math.min(MAX_PATH_RULES, 1_000)
+);
+// Two filter spellings can compile to the same condition (`$image,script` and
+// `$script,image`), so entries are de-duplicated again on the canonical form
+// rather than on their source text.
+const canonicalByHostCondition = new Map();
+for (const entry of qualifiedRules.values()) {
+  if (selectedHosts.has(entry.host)) continue;
+  const condition = canonicalHostCondition(entry.condition);
+  if (!condition) {
+    droppedOptions.set("unrepresentable-condition", (droppedOptions.get("unrepresentable-condition") ?? 0) + 1);
+    continue;
+  }
+  const key = `${entry.host}|${JSON.stringify(condition)}`;
+  if (!canonicalByHostCondition.has(key)) canonicalByHostCondition.set(key, { host: entry.host, condition });
+}
+const selectedQualified = [...canonicalByHostCondition.values()]
+  .map((entry) => ({ entry, mentions: domainMentions.get(registrableDomain(entry.host)) ?? 0 }))
+  .sort((a, b) => b.mentions - a.mentions || a.entry.host.localeCompare(b.entry.host) || JSON.stringify(a.entry.condition).localeCompare(JSON.stringify(b.entry.condition)))
+  .slice(0, Math.max(0, qualifiedBudget))
+  .map(({ entry }) => entry);
+const canonicalQualified = canonicalHostRules(selectedQualified);
+if (canonicalQualified === null) throw new Error("Compiled host-rule conditions are not valid DNR conditions.");
+
+const pathBudget = Math.min(MAX_PATH_RULES, MAX_STATIC_RULES - selected.length - canonicalQualified.length);
 const selectedPaths = [...pathRules]
   .map((key) => {
     const slash = key.indexOf("/");
@@ -193,21 +261,22 @@ const selectedPaths = [...pathRules]
   .sort((a, b) => a.key.localeCompare(b.key));
 
 const rules = [
-  ...selected.map((host) => `||${host}^`),
-  ...selectedPaths.map((entry) => `||${entry.key}`)
-].map((urlFilter, index) => ({
+  ...selected.map((host) => ({ urlFilter: `||${host}^`, condition: { resourceTypes: RESOURCE_TYPES } })),
+  ...canonicalQualified.map((entry) => ({ urlFilter: `||${entry.host}^`, condition: entry.condition })),
+  ...selectedPaths.map((entry) => ({ urlFilter: `||${entry.key}`, condition: { resourceTypes: RESOURCE_TYPES } }))
+].map(({ urlFilter, condition }, index) => ({
   id: index + 1,
   priority: 1,
   action: { type: "block" },
-  condition: { urlFilter, resourceTypes: RESOURCE_TYPES }
+  condition: { urlFilter, ...condition }
 }));
 
 if (rules.length > MAX_STATIC_RULES) throw new Error("Rule count exceeds the static ruleset budget.");
 
 const metadata = {
-  version: "1.0.0",
+  version: "1.1.0",
   buildDate: new Date().toISOString(),
-  checksum: await sha256(JSON.stringify(selected)),
+  checksum: await sha256(canonicalBlockingPayload({ hosts: selected, hostRules: canonicalQualified })),
   source: "EasyList+EasyPrivacy",
   attribution: "Ad and tracker blocking rules derived from EasyList and EasyPrivacy, © The EasyList Authors (https://easylist.to/), licensed under CC BY-SA 3.0 / GPL v3.",
   stats: {
@@ -215,16 +284,18 @@ const metadata = {
     extractedPathRules: pathRules.size,
     withdrawnByException: exceptionKeys.size,
     publishedHostRules: selected.length,
+    publishedQualifiedHostRules: canonicalQualified.length,
     publishedPathRules: selectedPaths.length,
-    publishedRules: rules.length
+    publishedRules: rules.length,
+    droppedByOption: Object.fromEntries([...droppedOptions].sort((a, b) => b[1] - a[1]))
   },
-  data: { hosts: selected }
+  data: { hosts: selected, hostRules: canonicalQualified }
 };
 
 await mkdir(outputDirectory, { recursive: true });
 await writeFile(resolve(outputDirectory, "ad-tracker-rules.json"), `${JSON.stringify(rules)}\n`);
 await writeFile(resolve(outputDirectory, "ad-tracker-data.json"), `${JSON.stringify(metadata)}\n`);
 console.log(
-  `Extracted ${hosts.size} hosts and ${pathRules.size} path rules; ` +
-    `published ${selected.length} host rules and ${selectedPaths.length} path rules.`
+  `Extracted ${hosts.size} hosts, ${qualifiedRules.size} option-qualified host rules and ${pathRules.size} path rules; ` +
+    `published ${selected.length} host, ${canonicalQualified.length} qualified and ${selectedPaths.length} path rules.`
 );

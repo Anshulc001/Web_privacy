@@ -9,8 +9,28 @@ export const BREACH_DATA_URL = `${DATA_URL_BASE}${BREACH_DATA_FILE}`;
 export const THREAT_DATA_URL = `${DATA_URL_BASE}${THREAT_DATA_FILE}`;
 export const LAST_SYNC_KEY = "dataLastSync";
 
+// The blocklists change daily at most, and the alarm that refreshes them is a
+// 24-hour one. A worker starts for every page, so it must not treat each start as
+// a reason to download three files and rebuild ~25,000 dynamic rules.
+export const DATA_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// A failed download is retried sooner than a successful one: the profile is left
+// with older data, and the next page load is a reasonable retry point.
+export const DATA_SYNC_RETRY_MS = 60 * 60 * 1000;
+
 function describeError(error) {
   return String(error?.message ?? error);
+}
+
+/** Whether a data kind needs a download now, judged from its last sync record. */
+export function isSyncDue(status, kind, now = Date.now()) {
+  const entry = status?.[kind];
+  if (!entry || typeof entry.at !== "string") return true;
+  const at = Date.parse(entry.at);
+  if (!Number.isFinite(at)) return true;
+  const age = now - at;
+  // A record from the future means the clock moved; retrying is the safe answer.
+  if (age < 0) return true;
+  return age >= (entry.ok ? DATA_SYNC_INTERVAL_MS : DATA_SYNC_RETRY_MS);
 }
 
 export function createDataSync(fetchImpl, storageArea, blockingManager, settingsStore) {
@@ -30,6 +50,17 @@ export function createDataSync(fetchImpl, storageArea, blockingManager, settings
       const response = await fetchImpl(url, { cache: "no-store" });
       if (!response.ok) throw new Error(`Download failed: ${response.status}`);
       const data = await validate(await response.json());
+      const stored = await storageArea.get(key);
+      const previous = stored?.[key];
+      // The list changes by a handful of hosts on a normal day, but applying it
+      // costs a full DNR rewrite of every downloaded host rule. An identical
+      // checksum means there is nothing new to apply, so the costly side effect
+      // is skipped; the copy is not rewritten either, since it is byte-identical.
+      if (previous && typeof previous.checksum === "string" && previous.checksum === data.checksum) {
+        await storageArea.set({ [`${kind}DataLastSync`]: new Date().toISOString() });
+        await storeLastSync(kind, true);
+        return { status: "unchanged", data };
+      }
       if (afterStore) await afterStore(data);
       await storageArea.set({ [key]: data, [`${kind}DataLastSync`]: new Date().toISOString() });
       await storeLastSync(kind, true);
@@ -65,7 +96,7 @@ export function createDataSync(fetchImpl, storageArea, blockingManager, settings
         validate: (candidate) => validateBlockingData(candidate),
         afterStore: async (data) => {
           const settings = await settingsStore.load();
-          await blockingManager.applyRemoteHosts(data.data.hosts, settings.blockingEnabled);
+          await blockingManager.applyRemoteHosts(data.data.hosts, settings.blockingEnabled, data.data.hostRules ?? []);
         }
       });
     },

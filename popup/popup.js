@@ -26,6 +26,9 @@ const seeBlocked = document.getElementById("see-blocked");
 const blockedPanel = document.getElementById("blocked-panel");
 const blockedList = document.getElementById("blocked-list");
 const blockedSource = document.getElementById("blocked-source");
+const strictRow = document.getElementById("strict-row");
+const strictToggle = document.getElementById("strict-toggle");
+const strictHint = document.getElementById("strict-hint");
 
 /** Names are whatever the site asked Chrome for, so labels are derived. */
 function permissionLabel(name) {
@@ -72,6 +75,7 @@ function render(details, summary) {
 
   allowlistToggle.hidden = false;
   allowlistToggle.textContent = details.allowlisted ? "Remove from allowlist" : "Allowlist this site";
+  renderSiteMode(details);
 
   renderBlocked(summary);
   renderBreach(details.breach);
@@ -121,10 +125,22 @@ function renderBlocked(summary) {
     countBadge.title = `${Number.isFinite(count) ? count : 0} blocked request(s)`;
 
     item.append(name, trackerBadge(host), countBadge);
+
+    // "Why" is a second line, not another badge: the popup is 320px wide and the
+    // reason is a sentence, not a label.
+    const reason = entry?.explain?.label;
+    if (typeof reason === "string" && reason) {
+      const why = document.createElement("span");
+      why.className = "blocked-why";
+      why.textContent = reason;
+      item.append(why);
+      item.title = `${host} — ${reason}`;
+    }
     blockedList.append(item);
   }
 
-  blockedSource.textContent = "Every source blocked on this page, most frequent first; the counts add up to the number above. Not a full request log, and page URLs are never stored.";
+  const version = typeof summary?.dataVersion === "string" ? ` Rule list v${summary.dataVersion}.` : "";
+  blockedSource.textContent = `Every source blocked on this page, most frequent first; the counts add up to the number above.${version} Not a full request log, and page URLs are never stored.`;
 }
 
 /** Breaches are a dashboard topic; the popup only advertises a match. */
@@ -253,6 +269,10 @@ async function loadCurrentSite() {
     status.textContent = "Current-site privacy details are unavailable.";
     blockingToggle.hidden = true;
     allowlistToggle.hidden = true;
+    strictRow.hidden = true;
+    strictToggle.disabled = false;
+    strictHint.hidden = true;
+    strictHint.textContent = "";
     cookiesList.textContent = "";
     cookieSummary.textContent = "";
     cookieTotal.hidden = true;
@@ -345,6 +365,42 @@ blockingToggle.addEventListener("click", () => {
     () => chrome.runtime.sendMessage({ type: "webguard.setBlockingEnabled", enabled }),
     "WebGuard could not be switched. Try again."
   );
+});
+
+/**
+ * Strict mode is the third state of the same control: Off is the allowlist button
+ * above it, Basic is the default, Strict adds a block on every third party the page
+ * starts. It is deliberately behind a switch with a warning, because it can break a
+ * page that needs a third-party script to work.
+ */
+function renderSiteMode(details) {
+  const strict = details.siteMode === "strict";
+  strictRow.hidden = false;
+  strictToggle.checked = strict;
+  // Off means the site runs untouched, so the strict switch has nothing to add.
+  strictToggle.disabled = details.allowlisted === true;
+  strictRow.classList.toggle("is-disabled", strictToggle.disabled);
+  strictHint.hidden = false;
+  strictHint.textContent = details.allowlisted
+    ? "This site is allowlisted, so nothing is blocked. Remove it from the allowlist to use strict mode."
+    : strict
+      ? "Third-party scripts, frames and requests are blocked. Images, styles and fonts still load. If the page breaks, switch back to Basic."
+      : "Off by default. Strict blocks third parties that are not on a known trackers list, but keeps images, styles and fonts.";
+}
+
+strictToggle.addEventListener("change", async () => {
+  if (!current || strictToggle.disabled) return;
+  const mode = strictToggle.checked ? "strict" : "basic";
+  strictToggle.disabled = true;
+  let failed = false;
+  try {
+    await chrome.runtime.sendMessage({ type: "webguard.setSiteMode", hostname: current.hostname, mode });
+  } catch (error) {
+    failed = true;
+    console.error("WebGuard popup: the site mode could not be saved.", error);
+  }
+  await loadCurrentSite();
+  if (failed) status.textContent = "The site mode could not be saved. Try again.";
 });
 
 allowlistToggle.addEventListener("click", () => {

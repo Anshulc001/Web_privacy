@@ -254,6 +254,46 @@ async function send(message) {
   return chrome.runtime.sendMessage(message);
 }
 
+/**
+ * One row per data file: what it is, which build, and how old. The version matters
+ * because "updated today" says nothing about which list is in force; a stored copy
+ * is whatever was downloaded last, not what this build shipped with.
+ */
+function renderDataStatus(overview) {
+  const list = el("data-list");
+  clear(list);
+  const blocking = overview.blocking ?? {};
+  const details = {
+    blocking: { version: blocking.dataVersion, buildDate: blocking.dataBuildDate }
+  };
+  for (const entry of overview.data ?? []) {
+    const item = document.createElement("li");
+    item.className = `data-row data-row--${entry.status}`;
+
+    const name = document.createElement("span");
+    name.className = "data-name";
+    name.textContent = entry.label;
+
+    const meta = document.createElement("span");
+    meta.className = "data-meta";
+    // `text` already opens with the label ("Ad and tracker rules: updated today"),
+    // so the row would read the same words twice.
+    const detail = entry.text.startsWith(`${entry.label}: `) ? entry.text.slice(entry.label.length + 2) : entry.text;
+    const parts = [detail];
+    const version = details[entry.key]?.version;
+    if (version) parts.push(`version ${version}`);
+    const built = details[entry.key]?.buildDate;
+    if (built) {
+      const date = new Date(built);
+      if (!Number.isNaN(date.getTime())) parts.push(`built ${date.toISOString().slice(0, 10)}`);
+    }
+    meta.textContent = parts.join(" \u00b7 ");
+
+    item.append(name, meta);
+    list.append(item);
+  }
+}
+
 /** Hosts with recorded visits inside the selected frame, most visited first. */
 function frameHosts() {
   const dates = new Set(frameDates());
@@ -376,8 +416,7 @@ async function loadOverview() {
   renderKpis();
   renderCharts();
 
-  // One compact freshness line in Settings instead of an Overview block.
-  el("sync-status").textContent = overview.data.map((entry) => entry.text).join(" ");
+  renderDataStatus(overview);
   el("auto-lookup").checked = overview.settings.autoDomainLookup;
   renderPrivacy();
 
@@ -1027,6 +1066,32 @@ el("clear-site-cookies").addEventListener("click", async () => {
   // the browser; the confirmation is then written over the refreshed status.
   await loadSite(host);
   if (state.target === host) el("cookies-status").textContent = message;
+});
+
+// A forced refresh downloads three files; the answer carries the new overview, so
+// the rows above the button update in place instead of needing a reload.
+el("refresh-data").addEventListener("click", async () => {
+  const button = el("refresh-data");
+  if (button.disabled) return;
+  button.disabled = true;
+  const feedback = el("data-feedback");
+  feedback.textContent = "Checking for a newer list…";
+  try {
+    const overview = await send({ type: "webguard.refreshData" });
+    if (overview?.data) {
+      state.overview = overview;
+      renderDataStatus(overview);
+    }
+    const changed = (overview?.data ?? []).filter((entry) => entry.status === "unavailable").length;
+    feedback.textContent = changed > 0
+      ? `Checked. ${changed} source${changed === 1 ? " is" : "s are"} still unavailable; the last good copy stays in use.`
+      : "Checked. The copies above are the newest available.";
+  } catch (error) {
+    feedback.textContent = "The update check failed. The copy already installed stays in use.";
+    console.error("WebGuard could not check for data updates.", error);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 // Clearing installs (or removes) ~25,000 dynamic rules, which takes seconds. The

@@ -164,6 +164,133 @@ test("allowlist normalizes duplicates and drops invalid hosts", async () => {
   assert.equal(new Set(dnr.calls[0][1].addRules.map((rule) => rule.id)).size, 5, "rule ids must be unique");
 });
 
+test("trims downloaded hosts to the budget Chrome actually reports", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const dnr = fakeDnr();
+  // One remote rule is installed and can be reclaimed by this same update.
+  dnr.getDynamicRules = async () => [{ id: 1_000_001 }];
+  // Chrome exposes the limit as a constant; there is no "available" call.
+  dnr.MAX_NUMBER_OF_DYNAMIC_RULES = 4;
+  const manager = createBlockingManager(dnr, fakeSettings());
+  const installed = await manager.applyRemoteHosts(["a.test", "b.test", "c.test", "d.test"], true);
+  // 4 slots - 0 kept by rules that are not ours - 1 reserved for the redirect.
+  assert.equal(installed, 3);
+  assert.equal(dnr.calls[0][1].addRules.length, 3);
+  // An update Chrome rejects installs nothing, so a partial list is the better outcome.
+  assert.deepEqual(dnr.calls[0][1].removeRuleIds, [1_000_001]);
+});
+
+test("installs every host when Chrome reports enough room", async () => {
+  const dnr = fakeDnr();
+  dnr.MAX_NUMBER_OF_DYNAMIC_RULES = 30_000;
+  const manager = createBlockingManager(dnr, fakeSettings());
+  assert.equal(await manager.applyRemoteHosts(["a.test", "b.test"], true), 2);
+});
+
+test("installs option-qualified rules with the condition their list asked for", async () => {
+  const dnr = fakeDnr();
+  const manager = createBlockingManager(dnr, fakeSettings());
+  const installed = await manager.applyRemoteHosts(
+    ["tracker.test"],
+    true,
+    [{ host: "pixel.test", condition: { resourceTypes: ["script", "image"], domainType: "thirdParty" } }]
+  );
+  assert.equal(installed, 2);
+  const qualified = dnr.calls[0][1].addRules.find((rule) => rule.condition.domainType === "thirdParty");
+  assert.ok(qualified, "the qualified rule must be installed");
+  assert.equal(qualified.condition.urlFilter, "||pixel.test^");
+  assert.deepEqual(qualified.condition.resourceTypes, ["script", "image"]);
+  assert.ok(qualified.id >= 1_500_000, "qualified ids must not collide with plain host ids");
+  assert.ok(qualified.id < 2_000_000, "and must stay inside the sweep that replaces remote rules");
+});
+
+test("plain hosts are installed before qualified rules when the budget is tight", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const dnr = fakeDnr();
+  dnr.getDynamicRules = async () => [];
+  dnr.MAX_NUMBER_OF_DYNAMIC_RULES = 2;
+  const manager = createBlockingManager(dnr, fakeSettings());
+  const installed = await manager.applyRemoteHosts(
+    ["a.test", "b.test"],
+    true,
+    [{ host: "pixel.test", condition: { resourceTypes: ["script"], domainType: "thirdParty" } }]
+  );
+  // 2 free - 1 reserved for the tracking-parameter redirect leaves one slot, and
+  // a plain host rule is the one that must get it.
+  assert.equal(installed, 1);
+  assert.equal(dnr.calls[0][1].addRules.length, 1);
+  assert.equal(dnr.calls[0][1].addRules[0].condition.domainType, undefined);
+});
+
+test("re-applying after a toggle restores qualified rules from the stored payload", async () => {
+  const dnr = fakeDnr();
+  const manager = createBlockingManager(dnr, fakeSettings(), async () => ({
+    hosts: ["tracker.test"],
+    hostRules: [{ host: "pixel.test", condition: { resourceTypes: ["script"], domainType: "thirdParty" } }]
+  }));
+  await manager.setEnabled(true);
+  const dynamic = dnr.calls.find((call) => call[0] === "dynamic");
+  const filters = dynamic[1].addRules.map((rule) => rule.condition.urlFilter);
+  assert.deepEqual(filters, ["||tracker.test^", "||pixel.test^"]);
+});
+
+test("a stored payload with a malformed qualified entry is skipped, not installed", async () => {
+  const dnr = fakeDnr();
+  const manager = createBlockingManager(dnr, fakeSettings());
+  const installed = await manager.applyRemoteHosts(
+    ["tracker.test"],
+    true,
+    [{ host: "pixel.test", condition: { resourceTypes: [] } }, { host: "", condition: { resourceTypes: ["script"] } }]
+  );
+  assert.equal(installed, 1, "only the valid plain host rule is installed");
+  assert.equal(dnr.calls[0][1].addRules.length, 1);
+});
+
+test("strict mode blocks third parties the site starts, never the navigation itself", async () => {
+  const dnr = fakeDnr();
+  const manager = createBlockingManager(dnr, fakeSettings());
+  await manager.setStrictSites(["www.site.com"]);
+
+  const rule = dnr.calls[0][1].addRules[0];
+  assert.ok(rule.id >= 3_000_000, "strict rules keep their own id range");
+  assert.equal(rule.priority, 2, "above a normal block, below the priority-10 allowlist");
+  assert.equal(rule.condition.domainType, "thirdParty");
+  assert.deepEqual([...rule.condition.initiatorDomains].sort(), ["site.com", "www.site.com"], "the registrable domain covers sibling subdomains");
+  // A navigation has no initiator of its own, so main_frame here would block
+  // visiting the site; that is the bug the option compiler already had to fix.
+  assert.ok(!rule.condition.resourceTypes.includes("main_frame"));
+  // Images, styles, fonts and media stay allowed: blocking them stripped BBC's own
+  // CDN and Wikipedia's images in a real run, without stopping any tracker.
+  for (const type of ["image", "stylesheet", "font", "media"]) {
+    assert.ok(!rule.condition.resourceTypes.includes(type), `${type} must keep loading on a strict site`);
+  }
+  for (const type of ["script", "xmlhttprequest", "sub_frame", "ping"]) {
+    assert.ok(rule.condition.resourceTypes.includes(type), `${type} must be blocked in strict mode`);
+  }
+});
+
+test("an allowlist edit does not delete the strict rules", async () => {
+  const dnr = fakeDnr();
+  dnr.getDynamicRules = async () => [{ id: 3_000_000 }, { id: 2_000_001 }, { id: 5 }];
+  const manager = createBlockingManager(dnr, fakeSettings());
+  await manager.setAllowlist(["allowed.test"]);
+  const update = dnr.calls.find((call) => call[0] === "dynamic");
+  assert.ok(update[1].removeRuleIds.includes(2_000_001));
+  assert.ok(!update[1].removeRuleIds.includes(3_000_000), "strict rules belong to another feature");
+});
+
+test("turning WebGuard off removes the strict rules too", async () => {
+  const dnr = fakeDnr();
+  dnr.getDynamicRules = async () => [{ id: 3_000_000 }];
+  const manager = createBlockingManager(dnr, fakeSettings({ strictSites: ["site.com"] }));
+  await manager.setEnabled(false);
+  const strictUpdate = dnr.calls
+    .filter((call) => call[0] === "dynamic")
+    .find((call) => call[1].removeRuleIds.includes(3_000_000));
+  assert.ok(strictUpdate, "the strict rule must be removed");
+  assert.deepEqual(strictUpdate[1].addRules, []);
+});
+
 test("no tracking-parameter rule is added while blocking is off", async () => {
   const dnr = fakeDnr();
   const manager = createBlockingManager(dnr, fakeSettings({ blockingEnabled: false }));

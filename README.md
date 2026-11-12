@@ -21,7 +21,7 @@ press **Load unpacked**, and pick this folder.
 | **Cookies** | Every cookie for the current site: name, domain, expiry, Secure, HttpOnly, SameSite, and first- versus third-party. Cookie **values are never read, stored or displayed**. |
 | **Permissions** | One row per permission the selected site actually asked Chrome for — not a fixed list, so a site that asks for the clipboard, MIDI, screen wake lock or anything else still shows up. Each row carries the page's live state (granted / denied / prompt / unavailable); every row Chrome can store a per-site value for also gets an **Allow / Ask / Block** setting that writes Chrome's own per-site value. Which permissions those are is read from Chrome itself, so this is not a fixed four; a row Chrome has no per-site setting for says so instead of showing a control that would do nothing. Two Chrome settings (fullscreen and pointer lock) are deprecated and crash the browser when an extension reads them, so those rows show the page's state only. With nothing requested the panel says the site doesn't require any permission yet. State is re-read while the dashboard is open and whenever the popup opens, so a permission you grant in Chrome appears without a refresh. |
 | **Domain info** | Hostname and HTTPS status, plus registry data (registrar, registration date, "registered less than 30 days ago") fetched over RDAP as soon as you select a site, or with the button. A Settings switch turns the automatic lookup off. |
-| **Ads & trackers** | 25,000 host-level blocking rules built from EasyList and EasyPrivacy, cosmetic filtering that hides standard ad slots and blocked ad frames (so no empty boxes are left behind), a global on/off switch, a per-site allowlist, blocked counts per tab and per day, and a top-blocked-hosts list. |
+| **Ads & trackers** | 25,000 host-level blocking rules built from EasyList and EasyPrivacy, plus up to 3,000 rules that keep the list's own conditions (`$third-party`, `$domain=`, `$script`, …) instead of blocking the host everywhere, plus ~1,200 path rules. Cosmetic filtering hides standard ad slots and blocked ad frames (so no empty boxes are left behind). A global on/off switch, three per-site modes (Off / Basic / Strict — strict also blocks third-party scripts, frames and requests, while images, styles and fonts keep loading), blocked counts per tab and per day, a reason for every blocked host, and a top-blocked-hosts list. |
 | **Suspicious** | One explainable 0–100 score from local URL checks, an offline phishing blocklist and the RDAP new-domain flag. Every point is listed with its reason. |
 | **Breach & OSINT** | Offline matching against Have I Been Pwned breach data, with plain-language flags and links so you can check your own email. |
 | **Dashboard** | A full-tab page with nine sections. The header picker (Today / Yesterday / Past 7 days) decides which sites the site list offers and which day the totals cover; a selected site adds its own panels. SVG charts (blocked per day, top trackers), no chart library. |
@@ -111,6 +111,12 @@ contributors, licensed under MIT.
 
 Breach data source: **Have I Been Pwned** by Troy Hunt (https://haveibeenpwned.com), licensed under
 CC BY 4.0.
+
+Design and mechanisms inspired by **uBlock Origin** and **uBlock Origin Lite** by Raymond Hill
+(https://github.com/gorhill/uBlock), licensed under GPLv3. WebGuard is an independent implementation
+in its own codebase; the filter-option mapping onto Chrome's declarativeNetRequest conditions (the
+approach behind `$third-party`, `$domain=` and type-qualified rules) follows the design uBlock
+Origin established, and credit for that design belongs to its authors.
 
 ---
 

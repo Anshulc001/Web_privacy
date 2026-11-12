@@ -44,7 +44,8 @@ function createService(overrides = {}) {
     tabsApi: overrides.tabsApi ?? { async query() { return []; }, async get() { return null; }, async sendMessage() { return null; } },
     contentSettings: overrides.contentSettings ?? null,
     blockingManager: overrides.blockingManager ?? null,
-    blockingCounter: overrides.blockingCounter ?? null
+    blockingCounter: overrides.blockingCounter ?? null,
+    explainHost: overrides.explainHost ?? null
   });
 }
 
@@ -175,6 +176,33 @@ test("siteReport keeps the other sections when cookies fail and shares the allow
   assert.equal(report.permissions.camera, "unavailable", "no live page could be probed");
 });
 
+test("siteReport attaches a 'why' to each blocked host when an explainer is supplied", async () => {
+  const service = createService({
+    blockingCounter: {
+      async siteSummary() {
+        return { days: {}, dayHosts: {}, hosts: [{ host: "ads.test", count: 2 }], total: 2 };
+      }
+    },
+    explainHost: async (host) => ({ reason: "host", label: `explained ${host}` })
+  });
+  const report = await service.siteReport({ hostname: "www.example.com" });
+  assert.equal(report.blocking.hosts[0].explain.label, "explained ads.test");
+  assert.equal(report.blocking.total, 2, "the explainer must not change the counts");
+});
+
+// The dashboard shows which build of the list is in force; "updated today" alone
+// says nothing about what is being blocked with.
+test("overview exposes the blocking data version and build date", async () => {
+  const service = createService({
+    storageArea: createStorage({
+      blockingData: { version: "1.1.0", buildDate: "2026-11-12T00:00:00.000Z", data: { hosts: ["ads.test"], hostRules: [] } }
+    })
+  });
+  const overview = await service.overview();
+  assert.equal(overview.blocking.dataVersion, "1.1.0");
+  assert.equal(overview.blocking.dataBuildDate, "2026-11-12T00:00:00.000Z");
+});
+
 test("sitePermissions reports an explicit empty set instead of a default list", async () => {
   const service = createService();
   assert.equal((await service.sitePermissions({})).status, "unavailable");
@@ -256,7 +284,8 @@ test("clearHistory and clearAllData reset every stored surface", async () => {
     historyStore,
     blockingManager: {
       async setEnabled(enabled) { managerCalls.push(["enabled", enabled]); },
-      async setAllowlist(hosts) { managerCalls.push(["allowlist", hosts]); }
+      async setAllowlist(hosts) { managerCalls.push(["allowlist", hosts]); },
+      async setStrictSites(hosts) { managerCalls.push(["strictSites", hosts]); }
     },
     blockingCounter: {
       async prune() {},
@@ -273,7 +302,10 @@ test("clearHistory and clearAllData reset every stored surface", async () => {
   assert.deepEqual(counterCalls, ["clear"]);
   assert.deepEqual(storageArea.values[DOMAIN_CACHE_KEY], {});
   assert.deepEqual(storageArea.values.siteObservations, {});
-  assert.deepEqual(managerCalls, [["allowlist", []], ["enabled", true]]);
+  assert.deepEqual(managerCalls, [["allowlist", []], ["strictSites", []], ["enabled", true]]);
+  // Settings are reset before the engines reconcile: setEnabled re-reads them, so a
+  // save afterwards would leave the old strict sites installed.
+  assert.deepEqual(storageArea.values.settings.strictSites, [], "strict sites are cleared too");
   assert.equal(storageArea.values.settings.historyPaused, DEFAULT_SETTINGS.historyPaused);
   assert.deepEqual(storageArea.values.settings.siteAllowlist, []);
 });

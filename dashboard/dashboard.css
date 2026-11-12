@@ -312,9 +312,32 @@ section > h2 + h3, h2 + h3 { margin-top: var(--s4); }
 }
 
 #breach-list, #allowlist-list,
-#cookies-list, #permissions-list, #risk-reasons {
+#cookies-list, #permissions-list, #risk-reasons, #data-list {
   margin: var(--s2) 0 var(--s3);
 }
+
+/* Settings > Blocklist data: one row per file, name on the left, build and age on
+   the right. A stale file gets the warning colour it already has in the text. */
+#data-list { list-style: none; padding: 0; }
+
+.data-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.data-row:last-child { border-bottom: none; padding-bottom: 0; }
+
+.data-name { color: var(--text); }
+
+.data-meta { color: var(--muted); font-size: 0.82rem; }
+
+.data-row--outdated .data-meta { color: var(--warn, #9a6700); }
+.data-row--unavailable .data-meta { color: var(--warn, #9a6700); }
 
 /* ---------- forms and controls ---------- */
 

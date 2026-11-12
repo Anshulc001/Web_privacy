@@ -77,9 +77,16 @@ describe("live dashboard in Chrome", () => {
       assert.deepStrictEqual(emptyCharts.map((entry) => entry.trim()), ["No data yet.", "No data yet."]);
       assert.strictEqual(await page.locator(".chart svg").count(), 0, "no chart is drawn before any data exists");
 
-      // Data freshness is one compact line in Settings.
-      const syncStatus = await page.locator("#sync-status").innerText();
-      assert.ok(syncStatus.includes("Ad and tracker rules"), `sync status missing data: ${syncStatus}`);
+      // Data freshness is one row per file in Settings, with the build in use.
+      const dataRows = await page.locator("#data-list .data-row").allInnerTexts();
+      assert.ok(
+        dataRows.some((row) => row.includes("Ad and tracker rules")),
+        `rules row missing: ${dataRows.join(" | ")}`
+      );
+      // A profile that has not synced yet still has the bundled ruleset, so its row
+      // must say so instead of vanishing.
+      assert.strictEqual(await page.locator("#refresh-data").count(), 1, "the update button must be present");
+      assert.strictEqual(await page.locator("#sync-status").count(), 0, "the old one-line status is gone");
 
       assert.deepStrictEqual(consoleErrors, [], "dashboard must not log console errors");
     } finally {

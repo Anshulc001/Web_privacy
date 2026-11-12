@@ -218,11 +218,12 @@ describe("WebGuard end to end", () => {
     const bars = await page.locator("#chart-blocked svg rect.bar").count();
     assert.ok(bars >= 7, `blocked chart should have 7 daily bars, found ${bars}`);
 
-    // Data freshness is a single compact line in Settings.
-    const dataText = await page.locator("#sync-status").innerText();
+    // Settings lists one row per data file, with the version in force.
+    const dataText = await page.locator("#data-list").innerText();
     assert.ok(dataText.includes("Ad and tracker rules"), "rules status missing");
     assert.ok(dataText.includes("Breach data"), "breach status missing");
     assert.ok(dataText.includes("Phishing blocklist"), "threat status missing");
+    assert.ok(dataText.includes("version"), `the blocking data version is not shown: ${dataText}`);
 
     // Settings → Privacy is generated from lib/privacy-contract.mjs, so it must
     // name the real download host, the registry lookups and every permission.

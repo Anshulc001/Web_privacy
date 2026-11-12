@@ -23,6 +23,9 @@ SITE-CANDIDATES.md
 AUDIT-*.md
 IDEAS.md
 
+# Reference clones for structure/code comparison (never shipped, never packaged)
+compare/
+
 # OS / editor artifacts
 .DS_Store
 Thumbs.db

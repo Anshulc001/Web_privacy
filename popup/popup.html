@@ -33,6 +33,11 @@
           <p id="blocked-source" class="hint"></p>
         </div>
         <button id="allowlist-toggle" type="button" hidden>Allowlist this site</button>
+        <label class="switch strict-switch" id="strict-row" hidden>
+          <input id="strict-toggle" type="checkbox">
+          <span>Strict: block third-party scripts, frames and requests</span>
+        </label>
+        <p class="hint" id="strict-hint" hidden></p>
       </section>
 
       <section class="card breach-card" id="breach-card" aria-labelledby="breach-heading" hidden>

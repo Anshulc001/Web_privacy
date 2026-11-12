@@ -39,7 +39,7 @@ function permissionRows(requested) {
   return normalizeRequestedPermissions(requested);
 }
 
-export function createDashboardService({ storageArea, settingsStore, historyStore, observationStore, cookiesApi, tabsApi, contentSettings = null, blockingManager = null, blockingCounter = null }) {
+export function createDashboardService({ storageArea, settingsStore, historyStore, observationStore, cookiesApi, tabsApi, contentSettings = null, blockingManager = null, blockingCounter = null, explainHost = null }) {
   async function safeGet(key) {
     try {
       const stored = await storageArea.get(key);
@@ -85,7 +85,11 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
             }))
             .filter((entry) => Object.keys(entry.days).length > 0 || Object.keys(entry.dayHosts).length > 0),
           topHosts: topBlockedHosts(counts),
-          allowlist: settings.siteAllowlist
+          allowlist: settings.siteAllowlist,
+          // Shown in Settings: the reader can see which build of the list is in
+          // use instead of being told "updated today" with no version.
+          dataVersion: blockingData?.version ?? null,
+          dataBuildDate: blockingData?.buildDate ?? null
         },
         data: [
           describeData({
@@ -171,6 +175,12 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       const blocking = blockingCounter
         ? await blockingCounter.siteSummary(host)
         : { days: {}, dayHosts: {}, hosts: [], total: 0 };
+      // Each row answers "why was this blocked" as well as "how often". The
+      // explainer is injected so this module keeps taking its dependencies as
+      // arguments instead of reaching for Chrome.
+      if (typeof explainHost === "function" && Array.isArray(blocking.hosts)) {
+        blocking.hosts = await Promise.all(blocking.hosts.map(async (entry) => ({ ...entry, explain: await explainHost(entry.host) })));
+      }
 
       return {
         status: "ok",
@@ -237,6 +247,7 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       if ("historyPaused" in patch) allowed.historyPaused = patch.historyPaused;
       if ("blockingEnabled" in patch) allowed.blockingEnabled = patch.blockingEnabled;
       if ("autoDomainLookup" in patch) allowed.autoDomainLookup = patch.autoDomainLookup;
+      if ("strictSites" in patch) allowed.strictSites = patch.strictSites;
       const settings = await settingsStore.save(allowed);
       if ("historyRetentionHours" in allowed) {
         await historyStore.prune(settings.historyRetentionHours);
@@ -246,6 +257,11 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
       // the switch does nothing unless the rules are updated too.
       if ("blockingEnabled" in allowed && blockingManager) {
         await blockingManager.setEnabled(allowed.blockingEnabled);
+      }
+      // Strict mode lives in Chrome's rules too; storing the list alone would leave
+      // the previous sites blocked until the next restart.
+      if ("strictSites" in allowed && blockingManager) {
+        await blockingManager.setStrictSites(settings.strictSites);
       }
       return settings;
     },
@@ -265,13 +281,17 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         [DOMAIN_CACHE_KEY]: {},
         siteObservations: {}
       });
+      // Settings first, then the engines: `setEnabled` re-reads the stored settings
+      // to re-apply the per-site lists, so saving afterwards would leave the old
+      // strict sites installed until the next restart.
+      await settingsStore.save({ ...DEFAULT_SETTINGS });
       // "Clear all data" used to leave the allowlist and every other preference
       // behind, which is a list of the sites you care about.
       if (blockingManager) {
         await blockingManager.setAllowlist([]);
+        await blockingManager.setStrictSites([]);
         await blockingManager.setEnabled(DEFAULT_SETTINGS.blockingEnabled);
       }
-      await settingsStore.save({ ...DEFAULT_SETTINGS });
       return { cleared: true };
     }
   };

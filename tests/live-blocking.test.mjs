@@ -19,8 +19,19 @@ const EXTENSION_ID = "mkemflphgmnjjdebbcgioplolpgeclii";
 const BLOCKED = [
   { host: "googletagmanager.com", url: "https://www.googletagmanager.com/gtag/js" },
   { host: "google-analytics.com", url: "https://www.google-analytics.com/analytics.js" },
-  { host: "doubleclick.net", url: "https://ad.doubleclick.net/ddm/activity.js" }
+  { host: "doubleclick.net", url: "https://ad.doubleclick.net/ddm/activity.js" },
+  // The last two are published as "$third-party" rules: their condition is
+  // domainType thirdParty, not a plain host block. They prove the compiled
+  // condition actually reaches Chrome and fires, which the wide hosts above
+  // cannot show.
+  { host: "quantserve.com", url: "https://secure.quantserve.com/quant.js", qualified: true },
+  { host: "taboola.com", url: "https://www.taboola.com/libtrc/unip/1/tfa.js", qualified: true }
 ];
+
+// A host that only has an option-qualified rule must still be reachable when it is
+// the page itself: blocking a first-party visit is exactly what the list did not ask
+// for, and what an unconditioned host rule would have done.
+const FIRST_PARTY_SITE = "https://www.quantserve.com/";
 
 describe("live blocking in Chrome with the unpacked extension", () => {
   it("blocks tracker hosts, keeps the page working, and loads the bundled ruleset", async () => {
@@ -48,6 +59,14 @@ describe("live blocking in Chrome with the unpacked extension", () => {
       args: [
         `--disable-extensions-except=${EXTENSION_DIR}`,
         `--load-extension=${EXTENSION_DIR}`,
+        // A fresh profile downloads the *published* data file within a second of the
+        // worker starting, which silently replaced the bundled list this test is
+        // meant to measure: a run against the published v1.0.0 file reported every
+        // host as a wide rule. Pointing the data host at loopback makes the worker
+        // fall back to the bundled copy, so the assertions describe the ruleset in
+        // this repository. Remove this only if the test should track the published
+        // copy instead.
+        "--host-resolver-rules=MAP raw.githubusercontent.com 127.0.0.1",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-background-networking",
@@ -68,6 +87,23 @@ describe("live blocking in Chrome with the unpacked extension", () => {
         workerUrl.startsWith(`chrome-extension://${EXTENSION_ID}/`),
         `expected the extension to load as ${EXTENSION_ID}, got ${workerUrl || "no service worker"}`
       );
+
+      // Chrome validates the bundled ruleset at install time and silently disables
+      // every rule it cannot parse, so a broken condition would leave the extension
+      // blocking nothing while every other check still passed. With the data host
+      // pointed at loopback there is no downloaded list to hide behind either.
+      const ruleHealth = await workers[0].evaluate(async () => {
+        const dnr = chrome.declarativeNetRequest;
+        if (typeof dnr.getDisabledRuleIds !== "function") return null;
+        return {
+          enabled: await dnr.getEnabledRulesets(),
+          disabled: (await dnr.getDisabledRuleIds({ rulesetId: "ad_tracker_rules" })).length
+        };
+      });
+      if (ruleHealth) {
+        assert.deepEqual(ruleHealth.enabled, ["ad_tracker_rules"], "the bundled ruleset must be enabled");
+        assert.equal(ruleHealth.disabled, 0, "Chrome disabled compiled rules as invalid");
+      }
 
       const page = await context.newPage();
       const cdp = await context.newCDPSession(page);
@@ -95,9 +131,32 @@ describe("live blocking in Chrome with the unpacked extension", () => {
         assert.ok(failure, `expected ${entry.host} to fail`);
         assert.ok(
           failure.error.includes("ERR_BLOCKED_BY_CLIENT"),
-          `expected ${entry.host} to fail with ERR_BLOCKED_BY_CLIENT, got ${failure.error}`
+          `expected ${entry.host}${entry.qualified ? " (third-party-only rule)" : ""} to fail with ERR_BLOCKED_BY_CLIENT, got ${failure.error}`
         );
       }
+
+      // Visiting the site itself is a first-party request, so the third-party-only
+      // rule must stay out of the way. A network error is acceptable here (the run
+      // may be offline); being blocked by WebGuard is not.
+      const direct = await context.newPage();
+      const directCdp = await context.newCDPSession(direct);
+      await directCdp.send("Network.enable");
+      const directUrls = new Map();
+      const directFailures = [];
+      directCdp.on("Network.requestWillBeSent", (event) => directUrls.set(event.requestId, event.request.url));
+      directCdp.on("Network.loadingFailed", (event) => {
+        directFailures.push({ url: directUrls.get(event.requestId) ?? "", error: event.errorText });
+      });
+      await direct.goto(FIRST_PARTY_SITE, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+      const blockedVisit = directFailures.find(
+        (failure) => failure.url.startsWith(FIRST_PARTY_SITE) && failure.error.includes("ERR_BLOCKED_BY_CLIENT")
+      );
+      assert.strictEqual(
+        blockedVisit,
+        undefined,
+        `${FIRST_PARTY_SITE} is a first-party visit and must not be blocked by a third-party-only rule`
+      );
+      await direct.close();
     } finally {
       await context.close();
       await new Promise((resolve) => server.close(resolve));

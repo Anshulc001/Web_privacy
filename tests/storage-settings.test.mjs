@@ -5,7 +5,8 @@ import {
   DEFAULT_SETTINGS,
   SETTINGS_KEY,
   createSettingsStore,
-  normalizeSettings
+  normalizeSettings,
+  resolveSiteMode
 } from "../lib/storage-settings.mjs";
 
 test("normalizes missing and invalid settings to privacy-safe defaults", () => {
@@ -28,7 +29,8 @@ test("keeps valid settings and removes duplicate allowlist entries", () => {
     historyPaused: true,
     blockingEnabled: false,
     autoDomainLookup: false,
-    siteAllowlist: ["allowed.test"]
+    siteAllowlist: ["allowed.test"],
+    strictSites: []
   });
 });
 
@@ -82,4 +84,28 @@ test("the default allowlist cannot be mutated through a fallback", () => {
   assert.equal(Object.isFrozen(fallback.siteAllowlist), true, "invalid input returns the frozen default");
   assert.throws(() => fallback.siteAllowlist.push("evil.test"), TypeError);
   assert.deepEqual(DEFAULT_SETTINGS.siteAllowlist, [], "the defaults must stay empty");
+});
+
+test("strict sites are normalised, de-duplicated and default to none", () => {
+  const settings = normalizeSettings({ strictSites: [" Ads.Test ", "ads.test", "B.test"] });
+  assert.deepEqual(settings.strictSites, ["ads.test", "b.test"]);
+  // Same rule as the allowlist: one non-string entry invalidates the list rather
+  // than being dropped silently, so a corrupt write cannot half-apply.
+  assert.deepEqual(normalizeSettings({ strictSites: ["ok.com", 42] }).strictSites, []);
+  assert.deepEqual(normalizeSettings({}).strictSites, []);
+  assert.deepEqual(normalizeSettings({ strictSites: "not-a-list" }).strictSites, []);
+  assert.equal(Object.isFrozen(DEFAULT_SETTINGS.strictSites), true, "the default list cannot be mutated");
+});
+
+test("resolveSiteMode reports off, strict or basic, and off always wins", () => {
+  // Real TLDs on purpose: a reserved name like `x.test` has no registrable domain
+  // in host-match, so subdomain coverage is exact-match there and would hide the
+  // behaviour this test is about.
+  const settings = { siteAllowlist: ["plain.com"], strictSites: ["strict.com", "plain.com"] };
+  assert.equal(resolveSiteMode("www.plain.com", settings), "off", "the allowlist covers subdomains too");
+  assert.equal(resolveSiteMode("strict.com", settings), "strict");
+  assert.equal(resolveSiteMode("news.strict.com", settings), "strict", "a subdomain inherits the mode");
+  assert.equal(resolveSiteMode("other.com", settings), "basic");
+  assert.equal(resolveSiteMode("", settings), "basic");
+  assert.equal(resolveSiteMode("x.test", null), "basic");
 });

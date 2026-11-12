@@ -123,7 +123,12 @@
 
       <section id="settings" aria-labelledby="settings-heading">
         <h2 id="settings-heading">Settings</h2>
-        <p class="hint" id="sync-status"></p>
+
+        <h3>Blocklist data</h3>
+        <p class="hint">What this build is blocking with. WebGuard checks for a newer list about once a day; the button below asks now.</p>
+        <ul id="data-list" class="data-list"></ul>
+        <button id="refresh-data" type="button">Check for updates now</button>
+        <p id="data-feedback" class="hint" role="status"></p>
         <label for="retention-select">Visit record retention</label>
         <select id="retention-select"></select>
         <label class="switch"><input id="history-paused" type="checkbox"> Pause visit recording</label>

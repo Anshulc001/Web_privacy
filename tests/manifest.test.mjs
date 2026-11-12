@@ -70,5 +70,9 @@ test("declares a valid bundled static DNR ruleset", async () => {
   const filters = rules.map((rule) => rule.condition.urlFilter);
   assert.ok(filters.some((filter) => /^\|\|[^/]+\^$/.test(filter)), "host-anchored rules must be present");
   assert.ok(filters.some((filter) => /^\|\|[^/]+\//.test(filter)), "path-anchored rules must be present");
-  assert.deepEqual(filters, [...new Set(filters)], "a repeated filter wastes a rule slot");
+  // One filter may legitimately appear twice with different conditions ("block
+  // third-party scripts" and "block images on this site" are different rules), so
+  // what must not repeat is the whole rule.
+  const bodies = rules.map((rule) => JSON.stringify([rule.condition.urlFilter, rule.condition.resourceTypes, rule.condition.domainType, rule.condition.initiatorDomains, rule.condition.excludedInitiatorDomains]));
+  assert.deepEqual(bodies, [...new Set(bodies)], "a repeated rule wastes a rule slot");
 });

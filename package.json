@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test",
+    "test": "node --test \"tests/*.test.mjs\"",
     "build:ads": "node tools/build-ad-rules.mjs",
     "build:cosmetic": "node tools/build-cosmetic-rules.mjs",
     "build:breach": "node tools/build-breach-data.mjs",

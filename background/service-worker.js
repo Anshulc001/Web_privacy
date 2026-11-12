@@ -1,7 +1,7 @@
 import { createAlarmManager } from "./alarms.mjs";
 import { createBlockingManager } from "./blocking-manager.mjs";
 import { createBlockingCounter, isBlockedByClient, shouldCountBlockedRequest } from "./blocking-counter.mjs";
-import { BLOCKING_DATA_KEY, createDataSync } from "./data-sync.mjs";
+import { BLOCKING_DATA_KEY, createDataSync, isSyncDue } from "./data-sync.mjs";
 import { BREACH_DATA_KEY, checkHostForBreaches } from "../lib/breach-checker.mjs";
 import { hostSelectorsFor } from "../lib/cosmetic-rules.mjs";
 import { inspectSiteCookies } from "../lib/cookie-inspector.mjs";
@@ -19,13 +19,14 @@ import { scoreRisk } from "../lib/risk-score.mjs";
 import { THREAT_DATA_KEY, checkHostForThreats } from "../lib/threat-checker.mjs";
 import { TRACKING_PARAM_RULE_ID } from "../lib/tracking-params.mjs";
 import { inspectUrl } from "../lib/url-checks.mjs";
-import { createHistoryStore, createNavigationRecorder, hostnameFromUrl } from "./history-store.mjs";
+import { createHistoryStore, createNavigationRecorder, hostnameFromUrl, normalizeHostname } from "./history-store.mjs";
 import { hostCoveredBy, toggleAllowlistEntry } from "../lib/host-match.mjs";
 import { createObservationStore, validatePermissionRequest, validateSiteObservation } from "./messages.mjs";
 import { ensurePermissionRulesVersion, setSitePermission } from "./permission-settings.mjs";
 import { probeTabPermissionStates } from "./site-probe.mjs";
 import { normalizePermissionStates, normalizeRequestedPermissions } from "./permission-auditor.mjs";
-import { createSettingsStore } from "../lib/storage-settings.mjs";
+import { createSettingsStore, resolveSiteMode } from "../lib/storage-settings.mjs";
+import { createBlockingIndex, explainBlockedHost } from "../lib/blocking-explain.mjs";
 
 const historyStore = createHistoryStore(chrome.storage.local);
 const settingsStore = createSettingsStore(chrome.storage.local);
@@ -33,12 +34,46 @@ const blockingCounter = createBlockingCounter(chrome.storage.local);
 const alarmManager = createAlarmManager(chrome.alarms, historyStore, settingsStore, blockingCounter);
 const recordTopLevelNavigation = createNavigationRecorder(chrome.tabs, historyStore, settingsStore);
 const observationStore = createObservationStore(chrome.storage.local);
+// The stored blocking data carries two rule lists: hosts blocked outright and
+// hosts blocked only under the condition their list asked for. Both are returned
+// so re-installing after a toggle restores the same policy, not a wider one.
 const remoteBlockingHosts = async () => {
   const stored = await chrome.storage.local.get(BLOCKING_DATA_KEY);
-  const hosts = stored?.[BLOCKING_DATA_KEY]?.data?.hosts;
-  return Array.isArray(hosts) ? hosts : [];
+  const data = stored?.[BLOCKING_DATA_KEY]?.data;
+  return {
+    hosts: Array.isArray(data?.hosts) ? data.hosts : [],
+    hostRules: Array.isArray(data?.hostRules) ? data.hostRules : []
+  };
 };
 const blockingManager = createBlockingManager(chrome.declarativeNetRequest, settingsStore, remoteBlockingHosts);
+
+// The downloaded list is what makes "why was this blocked" answerable, and it only
+// changes when a sync lands. One index per checksum, rebuilt on the next popup open
+// after an update.
+let blockingIndexCache = { checksum: null, index: null };
+async function blockingIndex() {
+  try {
+    const stored = await chrome.storage.local.get(BLOCKING_DATA_KEY);
+    const data = stored?.[BLOCKING_DATA_KEY];
+    if (!data) return null;
+    if (blockingIndexCache.checksum === data.checksum) return blockingIndexCache.index;
+    const index = createBlockingIndex(data);
+    blockingIndexCache = { checksum: data.checksum ?? null, index };
+    return index;
+  } catch {
+    return null;
+  }
+}
+
+async function enrichBlockingSummary(summary) {
+  const index = await blockingIndex();
+  const hosts = Array.isArray(summary?.tabHosts) ? summary.tabHosts : [];
+  return {
+    ...summary,
+    dataVersion: index?.version ?? null,
+    tabHosts: hosts.map((entry) => ({ ...entry, explain: explainBlockedHost(entry.host, index) }))
+  };
+}
 const dataSync = createDataSync(fetch, chrome.storage.local, blockingManager, settingsStore);
 const DATA_SYNC_ALARM = "webguard-data-sync";
 
@@ -111,7 +146,8 @@ const dashboardService = createDashboardService({
   tabsApi: chrome.tabs,
   contentSettings: chrome.contentSettings,
   blockingManager,
-  blockingCounter
+  blockingCounter,
+  explainHost: async (host) => explainBlockedHost(host, await blockingIndex())
 });
 
 async function suspiciousInfo(tabId) {
@@ -200,6 +236,24 @@ async function observationFor(tabId, hostname) {
   return null;
 }
 
+/**
+ * One control, three states: Off (allowlisted), Basic (the shipped list) and Strict
+ * (also block every third party this page starts). The two lists are kept disjoint
+ * by removing any entry that covers the host before setting the new mode.
+ */
+async function setSiteMode(hostname, mode) {
+  const host = normalizeHostname(hostname);
+  if (!host) throw new TypeError("A hostname is required.");
+  if (mode !== "off" && mode !== "basic" && mode !== "strict") throw new TypeError("Unknown site mode.");
+  const settings = await settingsStore.load();
+  const allowlist = toggleAllowlistEntry(settings.siteAllowlist, host, mode === "off");
+  const strictSites = settings.strictSites.filter((entry) => !hostCoveredBy(host, [entry]));
+  if (mode === "strict") strictSites.push(host);
+  await blockingManager.setAllowlist(allowlist);
+  await blockingManager.setStrictSites(strictSites);
+  return settingsStore.save({ siteAllowlist: allowlist, strictSites });
+}
+
 async function currentSitePrivacy(tabId) {
   if (!Number.isInteger(tabId) || tabId < 0) throw new TypeError("A valid tab ID is required.");
   const tab = await chrome.tabs.get(tabId);
@@ -228,6 +282,10 @@ async function currentSitePrivacy(tabId) {
     // Matches the DNR allow rules (host plus registrable domain), so the popup and
     // the dashboard agree with what blocking actually does for this site.
     allowlisted: hostCoveredBy(hostname, settings.siteAllowlist),
+    // Off beats strict: a site the reader allowlisted stays untouched even if it
+    // was also marked strict. One function decides, so the popup cannot disagree
+    // with the rules Chrome is running.
+    siteMode: resolveSiteMode(hostname, settings),
     // Sent with the site details so the popup does not need a second round-trip.
     breach: { hostname, ...checkHostForBreaches(hostname, stored?.[BREACH_DATA_KEY]) }
   };
@@ -333,6 +391,7 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
   if (message.type === "webguard.currentSitePrivacy") return currentSitePrivacy(message.tabId);
   if (message.type === "webguard.setBlockingEnabled") return blockingManager.setEnabled(message.enabled);
   if (message.type === "webguard.setAllowlist") return blockingManager.setAllowlist(message.hosts);
+  if (message.type === "webguard.setSiteMode") return setSiteMode(message.hostname, message.mode);
   if (message.type === "webguard.toggleAllowlist") {
     const settings = await settingsStore.load();
     // Removal drops the registrable-domain entry that covers this host too, so the
@@ -341,7 +400,11 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
       toggleAllowlistEntry(settings.siteAllowlist, message.hostname, message.allowlisted === true)
     );
   }
-  if (message.type === "webguard.blockingSummary") return blockingCounter.summary(message.tabId ?? undefined);
+  if (message.type === "webguard.blockingSummary") return enrichBlockingSummary(await blockingCounter.summary(message.tabId ?? undefined));
+  if (message.type === "webguard.refreshData") {
+    await runAllDataSyncs({ force: true });
+    return dashboardService.overview();
+  }
   if (message.type === "webguard.breachInfo") return breachInfo(message.tabId);
   if (message.type === "webguard.suspiciousInfo") return suspiciousInfo(message.tabId);
   if (message.type === "webguard.rdapLookup" || message.type === "webguard.lookupDomain") {
@@ -363,14 +426,28 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
   return undefined;
 });
 
-function runAllDataSyncs() {
-  void dataSync.syncBlockingData().catch((error) => console.error("WebGuard blocking data sync failed.", error));
-  void dataSync.syncBreachData().catch((error) => console.error("WebGuard breach data sync failed.", error));
-  void dataSync.syncThreatData().catch((error) => console.error("WebGuard threat data sync failed.", error));
+/**
+ * The worker starts for every page, and this used to run on each start: three
+ * downloads plus a full reinstall of ~25,000 dynamic rules before the page could
+ * be served. A fresh last-sync record now makes a worker wake cheap; the daily
+ * alarm still forces a refresh so data cannot silently age out.
+ */
+async function runAllDataSyncs({ force = false } = {}) {
+  let status = {};
+  try {
+    status = await dataSync.readSyncStatus();
+  } catch {
+    status = {};
+  }
+  const tasks = [];
+  if (force || isSyncDue(status, "blocking")) tasks.push(dataSync.syncBlockingData());
+  if (force || isSyncDue(status, "breach")) tasks.push(dataSync.syncBreachData());
+  if (force || isSyncDue(status, "threat")) tasks.push(dataSync.syncThreatData());
+  await Promise.all(tasks.map((task) => task.catch((error) => console.error("WebGuard data sync failed.", error))));
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm?.name === DATA_SYNC_ALARM) runAllDataSyncs();
+  if (alarm?.name === DATA_SYNC_ALARM) void runAllDataSyncs({ force: true });
 });
 
 // Chrome starts an extension worker at browser launch only when it has a reason
@@ -413,7 +490,7 @@ void chrome.alarms.create(DATA_SYNC_ALARM, { periodInMinutes: 1_440, persistAcro
 void Promise.all([
   dataSync.seedBreachDataFromBundle().catch((error) => console.error("WebGuard could not seed bundled breach data.", error)),
   dataSync.seedThreatDataFromBundle().catch((error) => console.error("WebGuard could not seed bundled threat data.", error))
-]).then(runAllDataSyncs);
+]).then(() => runAllDataSyncs());
 
 void alarmManager.ensureHistoryPruneAlarm().catch((error) => {
   console.error("WebGuard could not schedule history cleanup.", error);

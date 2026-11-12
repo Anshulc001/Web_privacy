@@ -40,7 +40,16 @@ describe('WebGuard browser + extension checks', () => {
     }
     assert.ok(hostRules > 0, 'a host-anchored rule blocks the whole domain');
     assert.ok(pathRules > 0, 'a path-anchored rule blocks one path on an otherwise working site');
-    assert.strictEqual(new Set(rules.map((rule) => rule.condition.urlFilter)).size, rules.length, 'a repeated filter wastes a rule slot');
+    // The same urlFilter may appear with different conditions (a third-party-only
+    // block next to a first-party one); a fully repeated rule is what wastes a slot.
+    const bodies = rules.map((rule) => JSON.stringify([
+      rule.condition.urlFilter,
+      rule.condition.resourceTypes,
+      rule.condition.domainType,
+      rule.condition.initiatorDomains,
+      rule.condition.excludedInitiatorDomains,
+    ]));
+    assert.strictEqual(new Set(bodies).size, rules.length, 'a repeated rule wastes a rule slot');
   });
 
   it('manifest references the ad_tracker_rules ruleset and declares the CSP/permissions', () => {
@@ -68,7 +77,7 @@ describe('WebGuard browser + extension checks', () => {
       'allowlist-toggle', 'cookies-heading', 'cookie-total', 'cookie-unit', 'cookie-empty',
       'see-cookies', 'cookies-panel', 'cookie-summary', 'cookies',
       'permissions-heading', 'permissions', 'breach-heading', 'breach-chip', 'breach-card',
-      'cookie-more', 'open-dashboard',
+      'cookie-more', 'open-dashboard', 'strict-row', 'strict-toggle', 'strict-hint',
     ];
     for (const id of requiredIds) {
       assert.ok(new RegExp(`id=["']${id}["']`).test(html), `popup.html must contain element #${id}`);

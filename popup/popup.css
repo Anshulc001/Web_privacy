@@ -245,10 +245,49 @@ button.btn-primary:hover { filter: brightness(1.06); color: #ffffff; background:
 
 li.blocked-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   -webkit-line-clamp: unset;
+}
+
+/* Strict mode: a switch with a sentence next to it, and a short warning under it.
+   The row greys out when the site is allowlisted, because then it does nothing. */
+.strict-switch {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.strict-switch input {
+  margin: 2px 0 0;
+  flex: none;
+}
+
+.strict-switch.is-disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+#strict-hint {
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+/* The reason sits on its own line under the host, so a long sentence cannot
+   squeeze the host name and the count out of a 320px popup. */
+.blocked-why {
+  flex: 1 0 100%;
+  margin-top: -2px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .blocked-host {
