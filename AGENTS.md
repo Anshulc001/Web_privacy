@@ -453,6 +453,20 @@ pruning) and test both the store and the effect.
 
 ## Recent changes (newest first)
 
+### 2026-11-15 — suspicious risk scoring now respects the live HTTP page instead of a fake HTTPS stand-in
+- Fixed the false zero score on real HTTP sites such as `http://testfire.net/`.
+  `dashboard-service.mjs` now prefers a live tab URL that matches the selected host
+  before falling back to the old `https://<host>/` stand-in. On HTTP pages the URL
+  checker correctly adds the `not-https` finding and the risk score rises from 0 to 25,
+  which matches the real browser result.
+- Added a regression test in `tests/dashboard-service.test.mjs` proving that a live
+  HTTP tab wins over the hostname-only fallback and that the suspicious score reflects
+  the actual page URL.
+- Verified with `node --test tests/dashboard-service.test.mjs`, `npm test`, and a real
+  Chrome + Playwright run against `http://testfire.net/`.
+- No version, permission, ruleset, data-date or test-count change; the state block did
+  not need regeneration.
+
 ### 2026-11-15 — the dashboard opened on All sites instead of the site you came from
 - Opening the dashboard from the toolbar popup now pre-selects the site the reader
   came from. The transport is `?sourceHost=<hostname>` on the dashboard URL: read

@@ -177,6 +177,23 @@ test("siteReport keeps the other sections when cookies fail and shares the allow
   assert.equal(report.permissions.camera, "unavailable", "no live page could be probed");
 });
 
+test("siteReport prefers a live matching tab URL over a https stand-in for true risk scoring", async () => {
+  const service = createService({
+    tabsApi: {
+      async get() { return null; },
+      async query() {
+        return [{ url: "http://testfire.net/" }, { url: "https://example.com/" }];
+      }
+    }
+  });
+
+  const report = await service.siteReport({ hostname: "testfire.net" });
+  assert.equal(report.status, "ok");
+  assert.equal(report.suspicious.isHttps, false, "the active HTTP tab must be used when available");
+  assert.deepEqual(report.suspicious.urlFindings.map((entry) => entry.id), ["not-https"]);
+  assert.equal(report.suspicious.score, 25);
+});
+
 test("siteReport attaches a 'why' to each blocked host when an explainer is supplied", async () => {
   const service = createService({
     blockingCounter: {

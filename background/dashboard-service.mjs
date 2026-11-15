@@ -146,6 +146,26 @@ export function createDashboardService({ storageArea, settingsStore, historyStor
         if (!host) return { status: "unavailable", reason: "That tab is no longer available." };
       }
       if (!host) return { status: "unavailable", reason: "A hostname is required." };
+      if (!pageUrl && Number.isInteger(tabId)) {
+        try {
+          const tab = await tabsApi.get(tabId);
+          pageUrl = typeof tab?.url === "string" ? tab.url : null;
+        } catch {
+          pageUrl = null;
+        }
+      }
+      if (!pageUrl) {
+        try {
+          const tabs = await tabsApi.query({});
+          const match = (Array.isArray(tabs) ? tabs : []).find((tab) => {
+            const tabHost = hostnameFromUrl(tab?.url);
+            return tabHost && tabHost === host && typeof tab?.url === "string";
+          });
+          pageUrl = typeof match?.url === "string" ? match.url : null;
+        } catch {
+          pageUrl = null;
+        }
+      }
 
       const settings = await settingsStore.load();
       const observation = await observationStore.get(host);
