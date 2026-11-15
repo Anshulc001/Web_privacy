@@ -242,3 +242,24 @@ test("seeds threat data from the bundle only when nothing is stored", async () =
 test("threat data URL is built from the single data base constant", () => {
   assert.ok(THREAT_DATA_URL.endsWith("/data/threat-list.json"));
 });
+
+test("rejects a downloaded file that would block navigation before it reaches DNR", async () => {
+  const hosts = [];
+  const hostRules = [{ host: "example.com", condition: { resourceTypes: ["main_frame"], domainType: "thirdParty" } }];
+  const file = {
+    version: "1.1.0",
+    buildDate: new Date().toISOString(),
+    checksum: await sha256(canonicalBlockingPayload({ hosts, hostRules })),
+    source: "test",
+    data: { hosts, hostRules }
+  };
+  const previous = { version: "previous", data: { hosts: ["safe.test"], hostRules: [] } };
+  const storage = memoryStorage({ blockingData: previous });
+  let applied = 0;
+  const blocking = { async applyRemoteHosts() { applied += 1; } };
+  const sync = createDataSync(async () => ({ ok: true, status: 200, async json() { return file; } }), storage, blocking, noopSettings);
+  const result = await sync.syncBlockingData();
+  assert.equal(result.status, "outdated");
+  assert.equal(applied, 0, "the unsafe rule must not reach applyRemoteHosts");
+  assert.equal(storage.state.blockingData, previous, "the last good copy must stay in place");
+});

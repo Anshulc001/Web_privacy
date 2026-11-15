@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createDashboardService } from "../background/dashboard-service.mjs";
+import { createObservationStore } from "../background/messages.mjs";
 import { BLOCKING_COUNTS_KEY } from "../background/blocking-counter.mjs";
 import { BLOCKING_DATA_KEY, LAST_SYNC_KEY } from "../background/data-sync.mjs";
 import { BREACH_DATA_KEY } from "../lib/breach-checker.mjs";
@@ -210,6 +211,19 @@ test("sitePermissions reports an explicit empty set instead of a default list", 
   assert.equal(ok.status, "ok");
   assert.deepEqual(ok.requestedPermissions, []);
   assert.deepEqual(ok.permissions, {});
+});
+
+// The panel is opened for whichever hostname the reader selected; a permission
+// the site asked for on its www host must not disappear on the bare domain.
+test("sitePermissions shows a permission recorded on the sibling subdomain of the same site", async () => {
+  const storageArea = createStorage();
+  await createObservationStore(storageArea).recordPermissions("www.example.com", ["camera"]);
+  const service = createService({ storageArea, observationStore: createObservationStore(storageArea) });
+
+  const result = await service.sitePermissions({ hostname: "example.com" });
+  assert.equal(result.status, "ok");
+  assert.deepEqual(result.requestedPermissions, ["camera"]);
+  assert.deepEqual(Object.keys(result.permissions), ["camera"], "only the name the page asked for gets a row");
 });
 
 test("clearSiteCookies counts removals and reports API failures", async () => {

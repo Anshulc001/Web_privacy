@@ -1,4 +1,5 @@
 import { hostnameFromUrl, normalizeHostname } from "./history-store.mjs";
+import { registrableDomain } from "../lib/host-match.mjs";
 import { normalizeRequestedPermissions } from "./permission-auditor.mjs";
 
 export const SITE_OBSERVATIONS_KEY = "siteObservations";
@@ -37,6 +38,20 @@ export function validatePermissionRequest(message, sender, extensionId) {
   return names.length > 0 ? { hostname, names } : null;
 }
 
+/**
+ * The storage key for a site. Chrome keeps one content setting per site and the
+ * blocking allowlist already matches the registrable domain, so a permission
+ * observed on www.example.com must be visible for example.com too. An IP
+ * address, a bare public suffix ("co.uk") or a malformed name has no
+ * registrable domain, so it keeps its own key and unrelated hosts never share
+ * a record.
+ */
+export function observationKey(value) {
+  const host = normalizeHostname(value);
+  if (!host) return null;
+  return registrableDomain(host) ?? host;
+}
+
 export function createObservationStore(storageArea) {
   function normalizeStoredObservation(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -51,9 +66,30 @@ export function createObservationStore(storageArea) {
     const stored = await storageArea.get(SITE_OBSERVATIONS_KEY);
     const source = stored?.[SITE_OBSERVATIONS_KEY];
     if (!source || typeof source !== "object" || Array.isArray(source)) return {};
-    return Object.fromEntries(Object.entries(source)
-      .map(([hostname, value]) => [normalizeHostname(hostname), normalizeStoredObservation(value)])
-      .filter(([hostname, value]) => hostname && value));
+    const records = {};
+    for (const [hostname, value] of Object.entries(source)) {
+      const key = observationKey(hostname);
+      const entry = normalizeStoredObservation(value);
+      if (!key || !entry) continue;
+      const previous = records[key];
+      if (!previous) {
+        records[key] = entry;
+        continue;
+      }
+      // A record written by the old exact-hostname build (www.example.com) can
+      // sit next to the site's key. Keep the newer page data, but union the
+      // requested names so migrating never forgets what the page asked for.
+      const newest = entry.updatedAt >= previous.updatedAt ? entry : previous;
+      records[key] = {
+        thirdPartyHosts: newest.thirdPartyHosts,
+        requestedPermissions: normalizeRequestedPermissions([
+          ...previous.requestedPermissions,
+          ...entry.requestedPermissions
+        ]),
+        updatedAt: newest.updatedAt
+      };
+    }
+    return records;
   }
   async function write(next) {
     for (const [hostname, value] of Object.entries(next)) {
@@ -72,13 +108,15 @@ export function createObservationStore(storageArea) {
   }
   return {
     save(observation) {
+      const key = observationKey(observation?.hostname);
+      if (!key) return Promise.resolve();
       return serialize(async () => {
         const all = await read();
         // The requested names are written by their own message, which can arrive
         // before or after this one; keeping them prevents a later observation from
         // forgetting what the page already asked for.
-        const previous = all[observation.hostname];
-        all[observation.hostname] = {
+        const previous = all[key];
+        all[key] = {
           thirdPartyHosts: observation.thirdPartyHosts,
           requestedPermissions: previous?.requestedPermissions ?? [],
           updatedAt: Date.now()
@@ -88,7 +126,7 @@ export function createObservationStore(storageArea) {
     },
     /** Adds newly observed permission names without touching the rest. */
     recordPermissions(hostname, names) {
-      const host = normalizeHostname(hostname);
+      const host = observationKey(hostname);
       const fresh = normalizeRequestedPermissions(names);
       if (!host || fresh.length === 0) return Promise.resolve([]);
       return serialize(async () => {
@@ -105,8 +143,10 @@ export function createObservationStore(storageArea) {
       // Reads wait for queued writes so a report taken right after a request
       // already sees it.
       await pending;
+      const key = observationKey(hostname);
+      if (!key) return null;
       const all = await read();
-      return all[hostname] ?? null;
+      return all[key] ?? null;
     }
   };
 }

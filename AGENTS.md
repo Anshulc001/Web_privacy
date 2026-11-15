@@ -52,10 +52,17 @@ them. Do not edit inside the markers by hand.
 - Phishing list built: 2026-11-15
 - Default visit-record retention: 168 hours (7 days)
 - Manifest permissions: storage, alarms, webNavigation, scripting, activeTab, cookies, declarativeNetRequest, webRequest, contentSettings
-- Test files: 36
+- Test files: 37
 <!-- END:AGENTS-STATE -->
 
 ## Discussion log (ideas, not facts)
+
+> **Local-only notes: these files are not in a fresh clone.** `IDEAS.md` and the
+> `AUDIT-*.md` files (currently `AUDIT-2026-11-12.md`) are gitignored working notes.
+> They exist only in the checkout where they were written, are **absent from a fresh
+> clone of the GitHub repository**, and are not shipped or read by the extension. If
+> one is missing, nothing is broken: the code and this file describe the behaviour,
+> and only the recorded reasoning behind past decisions is unavailable.
 
 Product ideas, research findings, rejected options and conclusions reached in
 conversation live in the gitignored `IDEAS.md`. It is deliberately not part of the
@@ -325,8 +332,9 @@ allowlisted, including on an already-open page (`storage.onChanged`).
   names it sees.
 - `content/permission-bridge.js` (isolated, also `document_start`, declared **before**
   the observer so it is listening) forwards each new name to the worker, which stores
-  it per hostname (`siteObservations[host].requestedPermissions`). Names are validated
-  for shape only — never against an allowlist — so an unknown permission still appears.
+  it per site (`siteObservations[registrableDomain(host)].requestedPermissions`, so
+  `www.example.com` and `example.com` share one record). Names are validated for shape
+  only — never against an allowlist — so an unknown permission still appears.
 - The dashboard shows exactly the requested names, never a default set. State is read
   live by `content-script.js` for those names only, and with no requested names the
   panel says "This site doesn't require any permission yet."
@@ -444,6 +452,230 @@ pruning) and test both the store and the effect.
   recount a retry storm for the popup (stored counts stay deduped).
 
 ## Recent changes (newest first)
+
+### 2026-11-15 — the dashboard opened on All sites instead of the site you came from
+- Opening the dashboard from the toolbar popup now pre-selects the site the reader
+  came from. The transport is `?sourceHost=<hostname>` on the dashboard URL: read
+  synchronously at module load, so there is no message race; hostname only, never a
+  path, query string or page content; no new permission and no new storage key. The
+  popup derives it with `hostnameFromUrl`, the dashboard re-validates with
+  `normalizeHostname`, and `state.target` is seeded once before `refresh()`.
+- Fallback does not widen the picker. An absent value, an invalid value (`chrome`
+  is rejected by `normalizeHostname`), and a valid hostname that is not among the
+  offered sites (`not-offered.test`) all leave `state.target = null`, i.e. All sites.
+  The last case goes through `fillTargetSelect()`'s existing null branch, so no extra
+  option was added. Settings and the global allowlist stay global, not site-scoped.
+- The seed is one-time. `state.target` has only four writes: the initializer,
+  `selectTarget`, `fillTargetSelect`, and the picker change. `refresh()`,
+  `loadOverview()` and `applyScope()` never reset it. The persistence test chooses a
+  different site, waits for the picker to actually rebuild (a third option appears),
+  then fires a real `chrome.storage.onChanged` refresh and asserts the manual choice
+  survived.
+- Verified with four tests in `tests/live-dashboard.test.mjs`, which drive the real
+  toolbar popup over CDP and a local `example.com` fixture mapped to loopback, plus a
+  protocol test in `tests/history-store.test.mjs` covering chrome, extension, about,
+  file, edge and view-source schemes. `npm test` **429/429 pass**, 55 suites, twice,
+  and again after the mutation restore. Mutation (force `target: null`) failed
+  exactly the three seeding-dependent tests with `'' !== 'example.com'`; the fallback
+  and history-store tests stayed green; both production-file hashes matched before
+  and after restore.
+- Disclosed limitations: a full-page reload re-runs the module and re-reads
+  `?sourceHost`, so it re-seeds to the original source instead of preserving a later
+  manual pick; and the literal `chrome://`-active-tab -> toolbar popup -> dashboard
+  path with no `sourceHost` is not driven end-to-end. The validation it depends on is
+  unit-covered for every non-web scheme, so the uncovered seam is only the one-line
+  `if (sourceHost)` wiring, the same harness-cost class as Item 8's manual check.
+- Open, deliberately unchanged: the `history-paused` and `retention-select` handlers
+  call `loadOverview()` without `applyScope()`, so if the frame change drops the
+  selected site, the site panels can stay stale. Pre-existing and unrelated to this
+  change.
+- No version, data, permission or test-file-count change; the state block did not
+  need regeneration.
+
+### 2026-11-15 — stored hostRules were installed without the navigation check
+- The second installation path for the same invariant as the entry below and the
+  2026-11-12 option-compilation incident: `service-worker.js`'s `remoteBlockingHosts`
+  reads `hostRules` straight from `chrome.storage.local`, and `blocking-manager.mjs`'s
+  `validHostRules` checked only host/object/`resourceTypes` before `applyHosts`
+  installed them on every startup and every toggle. A profile that stored
+  `main_frame` plus `domainType`/initiator before the download fix shipped kept
+  installing that rule silently until a validated sync replaced the exact entry.
+- Fixed at `validHostRules`, the one seam both installation paths reach: each stored
+  entry now goes through the exported `canonicalHostCondition`, not
+  `canonicalHostRules` (which is all-or-nothing and belongs on a download that is
+  trusted as a whole). A failing entry is dropped, never stripped and never allowed
+  to take the rest of the stored list down. Because the canonical check is reused,
+  it also drops conditions the old shape check accepted — unknown keys, an invalid
+  `domainType`, an empty initiator list, an unknown resource type — which is the same
+  standard `validateBlockingData` already applies on download.
+- No third writer: the repo-wide grep for `BLOCKING_DATA_KEY`/`hostRules` found only
+  `data-sync.mjs` writing the key; `dashboard/` and `popup/` have no hit. The `dist/`
+  and `test-results/` matches are generated copies and audit probes.
+- Verified: four new tests in `tests/blocking-manager.test.mjs` — the reported shape
+  dropped while the safe host still installs, excluded-initiator/mixed-type/both-
+  constraint entries dropped, legitimate type-only `main_frame` and
+  `sub_frame`+`domainType` still installed unchanged, and a blast-radius case for the
+  newly rejected loose shapes. Mutation proof (old `validHostRules` body restored)
+  failed exactly the three adversarial tests with installed counts 5 vs 2/1; the
+  restored `background/blocking-manager.mjs` hashes to
+  `026d03a2e54f7b1c634fd34d7b320dab4a1cd889703eea7672b8ffa81b42727d`. `npm test`
+  **424/424 pass**, 55 suites, twice.
+- Open caveat: no real-Chrome restart test seeds an unsafe stored rule into a
+  profile. Verification is the DNR fake (mock storage -> `validHostRules` -> asserted
+  dropped) plus the full suite, which includes the real-Chrome e2e. This is a
+  test-harness ceiling, the same kind as Item 8's manual-check caveat, not a logic
+  gap in the fix.
+- No version, data, permission or test-file-count change; the state block did not
+  need regeneration.
+
+### 2026-11-15 — downloaded blocking data could still block the navigation itself
+- The gap: `canonicalHostCondition` accepted `main_frame` together with
+  `domainType`, `initiatorDomains` or `excludedInitiatorDomains`, so a checksum-valid
+  `ad-tracker-data.json` passed `validateBlockingData` and `blocking-manager.mjs`'s
+  `qualifiedHostRule` installed it unchanged. Chrome reports a cross-site navigation
+  as third-party, so that rule blocks visiting the host — the same class of failure
+  recorded in the 2026-11-12 option-compilation entry, where a live Chrome run sent a
+  navigation to a qualified tracker's home page to `ERR_BLOCKED_BY_CLIENT`.
+- Fixed at the validation boundary: `canonicalHostCondition` now returns `null` for
+  any condition that combines `main_frame` with a party or initiator restriction.
+  Rejection, not stripping, because downloaded data is untrusted and
+  `data-sync.syncFile` already keeps the last good copy when validation throws;
+  silently removing `main_frame` would rewrite what the publisher sent. The filter
+  compiler keeps its strip-and-keep behaviour for locally parsed filters.
+- Verified: new tests in `tests/data-integrity.test.mjs` (direct condition check plus
+  six checksum-valid adversarial files, including `main_frame` + `sub_frame` partial
+  overlap and `main_frame` with both constraints) and `tests/data-sync.test.mjs` (the
+  unsafe download is rejected before `applyRemoteHosts`, and the last good copy is
+  retained). Mutation proof restored `lib/data-integrity.mjs` to sha256
+  `f796a4c96bcdad476406569df3ac41b06690aba6a44209dc45239e415b9511e2`. `npm test`
+  **420/420 pass**, 55 suites, twice.
+- Follow-up (closed by the entry above): `background/service-worker.js`'s
+  `remoteBlockingHosts` reads stored `hostRules`, and `blocking-manager.mjs`'s
+  `validHostRules` installs them on startup without re-running
+  `validateBlockingData`. A profile that stored an unsafe shape before this fix could
+  still install it until the next validated sync replaced the copy. This task did
+  not expand to that path; the next session fixed it in `validHostRules` with
+  reviewer sign-off.
+
+### 2026-11-15 — Item 9 audit: two host/allowlist bugs fixed (audit still paused)
+- Closeout only: this records two bugs already found, fixed and tested during Item 9's
+  continuous audit of `lib/host-match.mjs`. It adds no code. The audit itself is **not
+  complete**: it paused on the separate `main_frame` + party/initiator finding recorded
+  in the Item 10 entry below, which Item 10 fixed on the download path and Item 11
+  closed on the stored-installation path. Resuming the audit is still pending; only
+  these two bugs are closed.
+- **Bug 1 — `registrableDomain("home.arpa")` returned the suffix itself.** The local
+  suffix check only matched `host.endsWith("." + suffix)`, so the exact multi-label
+  name slipped through and `candidateHosts` treated it as a registrable domain. Fixed
+  in `lib/host-match.mjs` with `host === suffix || host.endsWith("." + suffix)`, which
+  also covers `sub.home.arpa`. Test: `treats the exact home.arpa local suffix as
+  having no registry record` in `tests/host-match.test.mjs`.
+- **Bug 2 — a bare public suffix could be added to the allowlist.** `co.uk` produced a
+  DNR `||co.uk^` allow rule, exempting an entire registry rather than one site.
+  Rejected when **adding** at all three boundaries: `toggleAllowlistEntry` in
+  `lib/host-match.mjs` (removal of an old stored entry still works), `normalizeSettings`
+  in `lib/storage-settings.mjs` (single-label local names are kept), and
+  `applyAllowlist` in `background/blocking-manager.mjs` (the layer that writes DNR).
+  Tests: `refuses a bare public suffix, which DNR would turn into a whole-registry
+  allow` in `tests/host-match.test.mjs`; `drops a bare multi-label public suffix from
+  the allowlist` in `tests/storage-settings.test.mjs`; `allowlist refuses a bare public
+  suffix instead of allowing a whole registry` in `tests/blocking-manager.test.mjs`.
+- Test-count delta at the time: **405 -> 417** (12 tests in this batch). The current
+  suite is **424/424** after Item 10's 3 tests (420) and Item 11's 4 tests (424).
+- No version, data, permission or retention change; the state block is unchanged.
+
+### 2026-11-15 — the popup hid every permission the browser was not granting right now
+- Reported as "after a full browser restart, revisiting the site shows no permission
+  info in the popup or the dashboard". Storage was never the problem: after closing
+  and relaunching a persistent profile, `siteObservations["example.com"]` still held
+  `["notifications"]`, and both query paths already build their probe list from the
+  **stored** names (`dashboard-service.mjs:163` and `:211`, `service-worker.js:267`),
+  not from requests re-observed in the new session.
+- The defect was `renderPermissions` in `popup/popup.js`: it listed only the names
+  Chrome reported as `granted`, and when there were none it printed a single "No
+  permission granted." — so a recorded permission whose live state was `prompt`,
+  `denied` or `unavailable` became invisible. That is exactly what a restart looks
+  like when Chrome does not carry the grant over. The dashboard never lost the row;
+  it only printed the uninformative "not given" / "Chrome did not report a state".
+- The popup now names every recorded permission with its current state
+  (`permissionStateSentence`) and keeps "No permission granted." as an extra line, so
+  the existing e2e wording assertion still holds. Names still come only from the
+  stored record, never from Chrome's settings list, so a permission the site never
+  asked for cannot appear.
+- Verified: `tests/restart-permissions.test.mjs` (new, 2 tests) closes a persistent
+  context, relaunches the same profile, then reads the real toolbar popup over CDP and
+  the dashboard panel. Both fail on the previous popup code with `after the restart
+  the popup must still name the permission, got "No permission granted."` and pass
+  after the fix.
+- Investigation note for later sessions: Playwright's `grantPermissions()` and an
+  extension-written `chrome.contentSettings` rule are **not** written to the profile's
+  `Preferences` file, so they read back as `ask` in a relaunched context. A test that
+  needs a permission to survive a restart must assert on the recorded name, not on a
+  persisted grant. `--unsafely-treat-insecure-origin-as-secure=<origin>` makes a local
+  `http://` fixture a secure context, so `Notification` exists without a certificate.
+- Open: the dashboard half of the report was not reproduced — its panel listed the
+  row in every run (the 2026-11-15 Item 7 entry records the only path that empties the
+  whole panel, the time-frame-scoped site picker).
+
+**Confidence and verification scope (follow-up):** this fix is verified against a
+test-harness reproduction of the symptom — Playwright does not persist a granted
+content setting across a persistent-context restart — not against confirmed identical
+behaviour in real Chrome, where a notification grant ordinarily persists indefinitely
+once decided. The fix is still correct and still an improvement independent of that
+distinction, because it stops hiding a recorded permission whenever the live state is
+anything other than `granted` — including legitimate real-Chrome causes such as
+Chrome's own automatic revocation of unused permissions — not only the restart case.
+It has **not** been verified against a real (non-test) Chrome installation per rule 9;
+that manual pass is the owner's step before treating this as closing the originally
+reported bug.
+
+### 2026-11-15 — a permission asked for on one hostname disappeared on another
+- The bug: `siteObservations` was keyed by the exact page hostname, so a prompt on
+  `www.example.com` produced no row when the dashboard or popup asked for
+  `example.com` (and vice versa). Chrome keeps one content setting per site, and the
+  allowlist already matches the registrable domain, so the record was the only place
+  that disagreed.
+- The fix is one helper, `observationKey` in `background/messages.mjs`, returning
+  `registrableDomain(host) ?? host` from `lib/host-match.mjs`. All four store
+  operations (`read`, `save`, `recordPermissions`, `get`) use it, so there is no
+  mixed exact-host/site keying left. `read` re-keys records written by the old build
+  and unions their requested names, so an existing observation is migrated into the
+  site record instead of becoming unreachable on the next write.
+- Safety: an IP address, a bare public suffix (`co.uk`) and a malformed name have no
+  registrable domain, so they keep their own key or are refused outright; two
+  unrelated registrations can never merge into one record. The newest page's
+  `thirdPartyHosts` wins for the site, which only widens the cookie query to sibling
+  subdomains of the same registrable domain.
+- **Still not addressed (Option (b)):** a permission Chrome already holds for a site
+  that never re-asks through the extension's own prompt flow remains invisible. The
+  rows still come only from what the page actually requested; nothing was added to
+  read Chrome's pre-existing content settings.
+- Verified: 3 new tests (the named regression, the IP/suffix/malformed guard in
+  `tests/messages.test.mjs`, and the panel-level sibling-subdomain test in
+  `tests/dashboard-service.test.mjs`); `npm test` **403/403 pass**, 55 suites. The
+  state block did not change (no version, rule, data, retention, permission or test
+  file count change), so it was not regenerated.
+
+### 2026-11-15 — the state-block guard no longer fails on a Windows checkout
+- `npm test` reported 397/398 with `AGENTS.md current-state block matches the
+  repository` failing, and `npm run agents:check` exited 1. Proven byte-for-byte: the
+  on-disk block is 649 bytes and the generated one 639, and the only difference is 10
+  extra `\r` bytes. `git ls-files --eol AGENTS.md` reports `i/lf w/crlf` with
+  `core.autocrlf=true` and no `.gitattributes`, so this Windows checkout stores CRLF
+  while `tools/agents-state.mjs` joins lines with `\n`. Split on CRLF, **zero lines
+  differed**, so this was a comparison bug: nothing was regenerated and no version,
+  data date, permission or count changed.
+- Fixed the comparison, not the content: `normalizeLineEndings` / `stateBlockMatches`
+  in `tools/agents-state.mjs` normalise CRLF before the `includes` check, and both
+  `--check` and `tests/agents-doc.test.mjs` use it. Two new tests pin both directions:
+  a CRLF copy with identical values passes, a block with one changed value still
+  fails. Mutation-checked by restoring the raw `includes` comparison (both the CRLF
+  test and `agents:check` went red) and then restoring the fix.
+- Docs: this file now says plainly that `IDEAS.md` and the `AUDIT-*.md` files are
+  gitignored local notes that a fresh clone will not contain. No behaviour change.
+- Verified: `npm test` **400/400 pass**, 55 suites, twice in a row (398 before the two
+  new tests); `npm run agents:check` current. The state block itself did not change, so
+  `npm run agents:state` was not needed.
 
 ### 2026-11-12 — a rebuilt list silently stopped blocking scorecardresearch
 - `tests/e2e.test.mjs` caught it: `https://sb.scorecardresearch.com/beacon.js` was no

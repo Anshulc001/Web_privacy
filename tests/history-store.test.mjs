@@ -25,6 +25,19 @@ test("extracts only a hostname from supported web URLs", () => {
   assert.equal(hostnameFromUrl("not a url"), null);
 });
 
+test("rejects every non-web scheme a dashboard source tab can have", () => {
+  for (const url of [
+    "chrome://settings",
+    "chrome-extension://abcdefghijklmnop/dashboard/dashboard.html",
+    "about:blank",
+    "file:///tmp/page.html",
+    "edge://settings",
+    "view-source:https://example.com"
+  ]) {
+    assert.equal(hostnameFromUrl(url), null, `${url} must not produce a site hostname`);
+  }
+});
+
 test("normalizes through the single shared hostname validator", () => {
   assert.equal(normalizeHostname("Example.COM."), "example.com");
   assert.equal(normalizeHostname("bad host"), null);

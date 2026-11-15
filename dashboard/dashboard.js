@@ -1,11 +1,18 @@
 import { barChartModel, CHART_HEIGHT, CHART_WIDTH, horizontalBarModel } from "./charts.mjs";
+import { normalizeHostname } from "../background/history-store.mjs";
 import { formatCount } from "../lib/format.mjs";
 import { isPublicDomain } from "../lib/domain-info.mjs";
 import { OUTBOUND_ENDPOINTS, PRIVACY_PERMISSIONS, STORED_DATA } from "../lib/privacy-contract.mjs";
 import { categorizeTrackerHost } from "../lib/tracker-categories.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const state = { target: null, targets: null, overview: null, site: null, frame: "today" };
+// The popup passes the site the reader came from as a hostname-only query
+// parameter. Validate it with the same canonical validator hostnameFromUrl
+// uses, and seed before refresh() so the first paint is already scoped. A
+// missing, invalid or non-http(s) source yields null, the existing All sites
+// default. Later picker changes are not overwritten: nothing re-reads this.
+const sourceHost = normalizeHostname(new URLSearchParams(location.search).get("sourceHost"));
+const state = { target: sourceHost, targets: null, overview: null, site: null, frame: "today" };
 // True while a click on the blocking switch is still being saved.
 let blockingToggleBusy = false;
 // These panels describe one site; in "All sites" mode they are hidden rather

@@ -61,6 +61,59 @@ test("records requested names per site and keeps them across later observations"
   assert.deepEqual((await store.get("other.test")).requestedPermissions, ["midi"]);
 });
 
+// The bug: the record was keyed by the exact page hostname, so a prompt on
+// www.example.com was invisible on example.com even though Chrome keeps one
+// content setting per site and blocking already matches the registrable domain.
+test("a permission requested on www.example.com is visible for example.com (one site, one record)", async () => {
+  let stored = {};
+  const store = createObservationStore({
+    async get() { return stored; },
+    async set(value) { stored = value; }
+  });
+
+  await store.recordPermissions("www.example.com", ["camera"]);
+  assert.deepEqual((await store.get("example.com")).requestedPermissions, ["camera"]);
+  assert.deepEqual((await store.get("www.example.com")).requestedPermissions, ["camera"]);
+
+  // The reverse direction too: a prompt on the bare domain must be shown on www.
+  await store.recordPermissions("example.com", ["microphone"]);
+  assert.deepEqual((await store.get("www.example.com")).requestedPermissions, ["camera", "microphone"]);
+
+  // A later page observation for the site must not drop the names it recorded.
+  await store.save({ hostname: "shop.example.com", thirdPartyHosts: ["tracker.test"] });
+  assert.deepEqual((await store.get("example.com")).requestedPermissions, ["camera", "microphone"]);
+  assert.deepEqual(Object.keys(stored.siteObservations), ["example.com"], "one site keeps one record");
+});
+
+// Registrable-domain keying must not become a bucket: an address, a registry
+// suffix and a malformed name have no site to share, so they stay separate.
+test("observation keys never merge unrelated hosts: IP, bare suffix, malformed", async () => {
+  let stored = {};
+  const store = createObservationStore({
+    async get() { return stored; },
+    async set(value) { stored = value; }
+  });
+
+  await store.recordPermissions("192.0.2.10", ["camera"]);
+  await store.recordPermissions("192.0.2.11", ["microphone"]);
+  assert.deepEqual((await store.get("192.0.2.10")).requestedPermissions, ["camera"]);
+  assert.deepEqual((await store.get("192.0.2.11")).requestedPermissions, ["microphone"]);
+
+  // co.uk is a registry, not a site. Its registrations must not collapse into it.
+  await store.recordPermissions("co.uk", ["notifications"]);
+  await store.recordPermissions("shop.co.uk", ["geolocation"]);
+  await store.recordPermissions("news.co.uk", ["midi"]);
+  assert.deepEqual((await store.get("shop.co.uk")).requestedPermissions, ["geolocation"]);
+  assert.deepEqual((await store.get("news.co.uk")).requestedPermissions, ["midi"]);
+  assert.deepEqual((await store.get("co.uk")).requestedPermissions, ["notifications"]);
+
+  // Malformed input is refused and never lands in a shared "unknown" record.
+  assert.deepEqual(await store.recordPermissions("bad host!", ["camera"]), []);
+  assert.equal(await store.get("bad host!"), null);
+  assert.equal(await store.get(undefined), null);
+  assert.equal(Object.keys(stored.siteObservations).includes(""), false);
+});
+
 test("keeps every name when a page reports several permissions at once", async () => {
   let stored = {};
   const store = createObservationStore({

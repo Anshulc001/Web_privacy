@@ -17,6 +17,26 @@ describe("normalizeHost", () => {
     assert.strictEqual(normalizeHost("192.168.0.1"), "192.168.0.1");
     assert.strictEqual(normalizeHost("999.1.1.1"), null);
   });
+
+  it("enforces the DNS label and whole-name length limits", () => {
+    const label63 = "a".repeat(63);
+    const label64 = "a".repeat(64);
+    const name253 = `${label63}.${label63}.${label63}.${"a".repeat(61)}`;
+    const name254 = `${label63}.${label63}.${label63}.${"a".repeat(62)}`;
+    assert.strictEqual(normalizeHost(`${label63}.com`), `${label63}.com`);
+    assert.strictEqual(normalizeHost(`${label64}.com`), null);
+    assert.strictEqual(name253.length, 253);
+    assert.strictEqual(normalizeHost(name253), name253);
+    assert.strictEqual(name254.length, 254);
+    assert.strictEqual(normalizeHost(name254), null);
+  });
+
+  it("trims surrounding whitespace but rejects internal control characters", () => {
+    assert.strictEqual(normalizeHost("  Example.COM.  "), "example.com");
+    assert.strictEqual(normalizeHost("   "), null);
+    assert.strictEqual(normalizeHost("exa\tmple.com"), null);
+    assert.strictEqual(normalizeHost("exa\nmple.com"), null);
+  });
 });
 
 describe("isPublicSuffix", () => {
@@ -33,6 +53,13 @@ describe("isPublicSuffix", () => {
   it("does not treat a registrable domain as a public suffix", () => {
     assert.strictEqual(isPublicSuffix("example.com"), false);
     assert.strictEqual(isPublicSuffix("example.co.uk"), false);
+  });
+
+  it("normalizes case and one trailing dot, and treats empty input as a suffix", () => {
+    assert.strictEqual(isPublicSuffix("CO.UK."), true);
+    assert.strictEqual(isPublicSuffix("EXAMPLE.COM."), false);
+    assert.strictEqual(isPublicSuffix(""), true);
+    assert.strictEqual(isPublicSuffix(null), true);
   });
 });
 
@@ -53,6 +80,16 @@ describe("candidateHosts", () => {
   it("returns an empty array for an invalid host", () => {
     assert.deepStrictEqual(candidateHosts("not a host"), []);
   });
+
+  it("returns no candidates for a bare public suffix or an empty value", () => {
+    assert.deepStrictEqual(candidateHosts("co.uk"), []);
+    assert.deepStrictEqual(candidateHosts("com"), []);
+    assert.deepStrictEqual(candidateHosts(""), []);
+  });
+
+  it("normalizes case and a trailing dot before walking parents", () => {
+    assert.deepStrictEqual(candidateHosts("MAIL.Example.COM."), ["mail.example.com", "example.com"]);
+  });
 });
 
 describe("toggleAllowlistEntry", () => {
@@ -69,6 +106,19 @@ describe("toggleAllowlistEntry", () => {
   it("keeps unrelated entries and tolerates an invalid host", () => {
     assert.deepStrictEqual(toggleAllowlistEntry(["other.test"], "not a host", false), ["other.test"]);
     assert.deepStrictEqual(toggleAllowlistEntry(["other.test"], "not a host", true), ["other.test"]);
+  });
+
+  it("refuses a bare public suffix, which DNR would turn into a whole-registry allow", () => {
+    assert.deepStrictEqual(toggleAllowlistEntry(["example.com"], "co.uk", true), ["example.com"]);
+    assert.deepStrictEqual(toggleAllowlistEntry([], "com.au", true), []);
+    // Refusing to add it must not make an entry written by an older build
+    // impossible to remove.
+    assert.deepStrictEqual(toggleAllowlistEntry(["co.uk", "example.com"], "co.uk", false), ["example.com"]);
+  });
+
+  it("filters invalid existing entries and normalizes case when adding", () => {
+    assert.deepStrictEqual(toggleAllowlistEntry(["Bad Host", "OK.test"], "example.com", true), ["example.com", "ok.test"]);
+    assert.deepStrictEqual(toggleAllowlistEntry(null, "Example.COM.", true), ["example.com"]);
   });
 });
 
@@ -91,6 +141,11 @@ describe("matchHostInRecord", () => {
     assert.strictEqual(matchHostInRecord("example.com", null), null);
     assert.strictEqual(matchHostInRecord("invalid host", record), null);
   });
+
+  it("does not match inherited properties", () => {
+    const inherited = Object.create({ "example.com": "inherited" });
+    assert.strictEqual(matchHostInRecord("www.example.com", inherited), null);
+  });
 });
 
 describe("registrableDomain", () => {
@@ -104,6 +159,12 @@ describe("registrableDomain", () => {
     for (const value of ["192.168.0.1", "com", "co.uk", "printer.local", "example.test", "not a host", null]) {
       assert.strictEqual(registrableDomain(value), null, `expected null for ${JSON.stringify(value)}`);
     }
+  });
+
+  it("treats the exact home.arpa local suffix as having no registry record", () => {
+    assert.strictEqual(registrableDomain("home.arpa"), null);
+    assert.strictEqual(registrableDomain("home.arpa."), null);
+    assert.strictEqual(registrableDomain("sub.home.arpa"), null);
   });
 });
 
@@ -123,5 +184,14 @@ describe("hostCoveredBy", () => {
     assert.strictEqual(hostCoveredBy("example.com", ["bad host", 42, null]), false);
     assert.strictEqual(hostCoveredBy("bad host", ["example.com"]), false);
     assert.strictEqual(hostCoveredBy("example.com", null), false);
+  });
+
+  it("covers exact IP and local-name entries, and rejects a non-array list", () => {
+    assert.strictEqual(hostCoveredBy("127.0.0.1", ["127.0.0.1"]), true);
+    assert.strictEqual(hostCoveredBy("127.0.0.1", ["127.0.0.2"]), false);
+    assert.strictEqual(hostCoveredBy("printer.local", ["printer.local"]), true);
+    assert.strictEqual(hostCoveredBy("printer.local", ["other.local"]), false);
+    assert.strictEqual(hostCoveredBy("example.com", []), false);
+    assert.strictEqual(hostCoveredBy("example.com", "example.com"), false);
   });
 });

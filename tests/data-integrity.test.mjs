@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canonicalBlockingPayload, canonicalHostRules, sha256, validateBlockingData } from "../lib/data-integrity.mjs";
+import { canonicalBlockingPayload, canonicalHostCondition, canonicalHostRules, sha256, validateBlockingData } from "../lib/data-integrity.mjs";
 
 async function fixture(hosts = ["ads.example", "tracker.test"]) {
   return { version: "1.0.0", buildDate: "2026-10-24T00:00:00.000Z", checksum: await sha256(JSON.stringify(hosts)), source: "test", data: { hosts } };
@@ -79,4 +79,54 @@ test("the checksum covers the qualified rules, so stripping them out fails", asy
   const data = await qualifiedFixture();
   const stripped = { ...data, data: { hosts: data.data.hosts } };
   await assert.rejects(validateBlockingData(stripped), /checksum/);
+});
+
+async function unsafeBlockingFile(condition) {
+  const hosts = [];
+  const hostRules = [{ host: "example.com", condition }];
+  return {
+    version: "1.1.0",
+    buildDate: "2026-10-24T00:00:00.000Z",
+    checksum: await sha256(canonicalBlockingPayload({ hosts, hostRules })),
+    source: "test",
+    data: { hosts, hostRules }
+  };
+}
+
+test("rejects main_frame paired with a party or initiator constraint", async () => {
+  const unsafe = [
+    { resourceTypes: ["main_frame"], domainType: "thirdParty" },
+    { resourceTypes: ["main_frame"], initiatorDomains: ["example.com"] },
+    { resourceTypes: ["main_frame"], excludedInitiatorDomains: ["example.com"] },
+    // Both constraints at once, and a partial overlap where main_frame is not the
+    // only resource type.
+    { resourceTypes: ["main_frame"], domainType: "thirdParty", excludedInitiatorDomains: ["example.com"] },
+    { resourceTypes: ["main_frame", "sub_frame"], domainType: "thirdParty" },
+    { resourceTypes: ["main_frame", "sub_frame"], initiatorDomains: ["example.com"] }
+  ];
+  for (const condition of unsafe) {
+    assert.equal(canonicalHostCondition(condition), null, `must reject ${JSON.stringify(condition)}`);
+    await assert.rejects(
+      validateBlockingData(await unsafeBlockingFile(condition), Date.parse("2026-10-25T00:00:00.000Z")),
+      /host rules/,
+      `must reject a checksum-valid file containing ${JSON.stringify(condition)}`
+    );
+  }
+});
+
+test("still accepts legitimate qualified rules after the invariant check", async () => {
+  // A type-only main_frame rule is narrower than a wide host block: it blocks
+  // navigations, not every request. Only a party/initiator constraint is unsafe.
+  assert.ok(canonicalHostCondition({ resourceTypes: ["main_frame", "sub_frame"] }));
+  assert.ok(canonicalHostCondition({ resourceTypes: ["sub_frame", "script"], domainType: "thirdParty" }));
+  assert.ok(canonicalHostCondition({ resourceTypes: ["script"], initiatorDomains: ["example.com"] }));
+
+  const data = await qualifiedFixture({
+    hostRules: [
+      { host: "navigation.test", condition: { resourceTypes: ["main_frame"] } },
+      { host: "pixel.test", condition: { resourceTypes: ["script"], domainType: "thirdParty" } }
+    ]
+  });
+  const result = await validateBlockingData(data, Date.parse("2026-10-25T00:00:00.000Z"));
+  assert.equal(result.data.hostRules.length, 2);
 });

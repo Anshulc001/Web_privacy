@@ -1,3 +1,4 @@
+import { hostnameFromUrl } from "../background/history-store.mjs";
 import { formatCount } from "../lib/format.mjs";
 import { categorizeTrackerHost } from "../lib/tracker-categories.mjs";
 
@@ -223,30 +224,54 @@ function describeCookie(cookie) {
   return `${cookie.name} (${cookie.domain}) — ${owner}; ${lifetime}; ${flags.join("; ")}.`;
 }
 
+/**
+ * Names every permission this site asked for, whatever Chrome answers right now.
+ * The stored request is what proves the site asked; listing only the granted
+ * ones made a recorded permission disappear after a restart, when Chrome no
+ * longer reported a grant and the panel printed just "No permission granted."
+ */
+function permissionStateSentence(state) {
+  if (state === "granted") return "this site can use it right now.";
+  if (state === "denied") return "this site is not allowed to use it.";
+  if (state === "prompt") return "this site asked for it; Chrome will ask you before it is used.";
+  return "this site asked for it; Chrome did not report a state.";
+}
+
 function renderPermissions(details) {
   permissionsSection.hidden = false;
   permissionsList.textContent = "";
 
-  if (!details.permissionStatesAvailable) {
-    addListItem(permissionsList, (details.requestedPermissions ?? []).length > 0
-      ? "Permission details are unavailable on this page."
-      : "This site doesn't require any permission yet.");
+  const requested = Array.isArray(details.requestedPermissions) ? details.requestedPermissions : [];
+  if (requested.length === 0) {
+    addListItem(permissionsList, "This site doesn't require any permission yet.");
     return;
   }
 
-  const granted = Object.entries(details.permissions ?? {}).filter(([, state]) => state === "granted");
-  if (granted.length === 0) {
+  const states = details.permissions ?? {};
+  if (!requested.some((name) => states[name] === "granted")) {
     addListItem(permissionsList, "No permission granted.");
-    return;
   }
-
-  for (const [name] of granted) {
-    addListItem(permissionsList, `${permissionLabel(name)} — this site can use it right now.`);
+  for (const name of requested) {
+    addListItem(permissionsList, `${permissionLabel(name)} — ${permissionStateSentence(states[name])}`);
   }
 }
 
-function openDashboard(hash = "") {
-  return chrome.tabs.create({ url: chrome.runtime.getURL(`dashboard/dashboard.html${hash}`) });
+async function openDashboard(hash = "") {
+  // The dashboard opens in a new tab, so once it loads it cannot tell which tab
+  // the reader came from. Pass the source tab's hostname (never its full URL)
+  // in the extension-page query so the first render can select that site. If
+  // the tab has no http(s) hostname, or the query fails, the dashboard keeps
+  // its existing "All sites" default.
+  let sourceHost = null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    sourceHost = hostnameFromUrl(tab?.url);
+  } catch {
+    sourceHost = null;
+  }
+  const url = new URL(chrome.runtime.getURL("dashboard/dashboard.html"));
+  if (sourceHost) url.searchParams.set("sourceHost", sourceHost);
+  return chrome.tabs.create({ url: `${url.href}${hash}` });
 }
 
 async function loadCurrentSite() {

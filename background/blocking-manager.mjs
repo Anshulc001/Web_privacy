@@ -1,5 +1,6 @@
 import { normalizeHostname } from "./history-store.mjs";
-import { candidateHosts } from "../lib/host-match.mjs";
+import { canonicalHostCondition } from "../lib/data-integrity.mjs";
+import { candidateHosts, isPublicSuffix } from "../lib/host-match.mjs";
 import { buildTrackingParamRule, TRACKING_PARAM_RULE_ID } from "../lib/tracking-params.mjs";
 
 const REMOTE_RULE_MIN_ID = 1_000_000;
@@ -171,9 +172,12 @@ export function createBlockingManager(dnr, settingsStore, readRemoteHosts = null
     const entries = [];
     for (const entry of hostRules) {
       const host = normalizeHostname(entry?.host);
-      const condition = entry?.condition;
-      if (!host || !condition || typeof condition !== "object" || !Array.isArray(condition.resourceTypes)) continue;
-      if (condition.resourceTypes.length === 0) continue;
+      // Stored rules skip the download validator, so they get the same canonical
+      // check here. In particular, a main_frame rule carrying a party or initiator
+      // constraint would block visiting the host. Drop that entry, not the list:
+      // one stale rule must not take down blocking for every other host.
+      const condition = canonicalHostCondition(entry?.condition);
+      if (!host || !condition) continue;
       const key = `${host}|${JSON.stringify(condition)}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -235,7 +239,11 @@ export function createBlockingManager(dnr, settingsStore, readRemoteHosts = null
   }
 
   async function applyAllowlist(hosts) {
-    const valid = [...new Set(hosts.map(normalizeHostname).filter(Boolean))].sort();
+    // A bare multi-label suffix ("co.uk") is a registry, not a site: a
+    // `||co.uk^` allow rule would spare every registration under it. Reject it
+    // here as well as at the settings boundary, because this is the layer that
+    // actually writes the DNR rule.
+    const valid = [...new Set(hosts.map(normalizeHostname).filter(Boolean).filter((host) => !isPublicSuffix(host)))].sort();
     const settings = await settingsStore.load();
     const existing = await dnr.getDynamicRules();
     // Allowlist ids live at and above ALLOW_RULE_MIN_ID, so the range is open

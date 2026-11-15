@@ -3,6 +3,7 @@ const { chromium } = playwright;
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,13 +13,14 @@ const EXTENSION_DIR = join(__dirname, "..").replace(/\\/g, "/");
 const EXTENSION_ID = "mkemflphgmnjjdebbcgioplolpgeclii";
 const DASHBOARD_URL = `chrome-extension://${EXTENSION_ID}/dashboard/dashboard.html`;
 
-async function openExtensionPage(url) {
+async function openExtensionPage(url, extraArgs = []) {
   const userDataDir = await mkdtemp(join(tmpdir(), "webguard-ui-"));
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     args: [
       `--disable-extensions-except=${EXTENSION_DIR}`,
       `--load-extension=${EXTENSION_DIR}`,
+      ...extraArgs,
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
@@ -32,6 +34,96 @@ async function openExtensionPage(url) {
 }
 
 const POPUP_URL = `chrome-extension://${EXTENSION_ID}/popup/popup.html`;
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function workerOf(context) {
+  return context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker", { timeout: 30_000 }));
+}
+
+async function waitForLoaded(page) {
+  await page.waitForFunction(
+    () => document.getElementById("status")?.textContent === "Loaded.",
+    null,
+    { timeout: 25_000 }
+  );
+}
+
+/** A local page served as example.com through Chrome's host resolver map. */
+function fixture() {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end("<!doctype html><html><head><title>fixture</title></head><body><h1>fixture</h1></body></html>");
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port }));
+  });
+}
+
+/**
+ * Opens the real toolbar popup over the site tab. Chrome's popup bubble is not a
+ * Playwright page, so this attaches to the target it opens, as the e2e suite does.
+ */
+async function openToolbarPopup(context, siteFragment) {
+  const worker = await workerOf(context);
+  const activate = () => worker.evaluate(async (fragment) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((entry) => (entry.url ?? "").includes(fragment));
+    if (!tab) return null;
+    await chrome.tabs.update(tab.id, { active: true });
+    try { await chrome.windows.update(tab.windowId, { focused: true }); } catch {}
+    return tab.id;
+  }, siteFragment);
+  await activate();
+
+  const browserSession = await context.browser().newBrowserCDPSession();
+  const before = new Set((await browserSession.send("Target.getTargets")).targetInfos.map((info) => info.targetId));
+  let opened = false;
+  for (let attempt = 0; attempt < 15 && !opened; attempt += 1) {
+    try {
+      await worker.evaluate(() => chrome.action.openPopup());
+      opened = true;
+    } catch {
+      await wait(400);
+      await activate();
+    }
+  }
+  assert.ok(opened, "chrome.action.openPopup() must succeed");
+
+  let popupTarget = null;
+  for (let attempt = 0; attempt < 60 && !popupTarget; attempt += 1) {
+    const { targetInfos } = await browserSession.send("Target.getTargets");
+    popupTarget = targetInfos.find((info) => info.type === "page" && info.url === POPUP_URL && !before.has(info.targetId)) ?? null;
+    if (!popupTarget) await wait(200);
+  }
+  assert.ok(popupTarget, "the toolbar popup must open");
+  const { sessionId } = await browserSession.send("Target.attachToTarget", { targetId: popupTarget.targetId, flatten: false });
+  let nextId = 1;
+  const pending = new Map();
+  browserSession.on("Target.receivedMessageFromTarget", (event) => {
+    const data = JSON.parse(event.message);
+    const waiter = pending.get(data.id);
+    if (!waiter) return;
+    pending.delete(data.id);
+    if (data.error) waiter.reject(new Error(JSON.stringify(data.error)));
+    else waiter.resolve(data.result);
+  });
+  const send = (method, params = {}) => {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      browserSession.send("Target.sendMessageToTarget", { sessionId, message: JSON.stringify({ id, method, params }) }).catch(reject);
+    });
+  };
+  const evaluate = async (expression) =>
+    (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
+  await send("Page.enable");
+  await send("Runtime.enable");
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (await evaluate("Boolean(document.getElementById('open-dashboard'))")) break;
+    await wait(200);
+  }
+  return { evaluate, targetId: popupTarget.targetId };
+}
 
 describe("live dashboard in Chrome", () => {
   it("renders every section with no console errors", async () => {
@@ -127,6 +219,140 @@ describe("live dashboard in Chrome", () => {
       );
       assert.strictEqual(await page.locator("#status").innerText(), "Current-site privacy details are unavailable.");
       assert.deepStrictEqual(pageErrors, [], "popup must not throw an unhandled error");
+    } finally {
+      await context.close();
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds the site picker from the source tab opened through the toolbar popup", async () => {
+    const { server, port } = await fixture();
+    const { context, userDataDir } = await openExtensionPage(null, ["--host-resolver-rules=MAP example.com 127.0.0.1"]);
+    try {
+      await workerOf(context);
+      const site = await context.newPage();
+      await site.goto(`http://example.com:${port}/`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await site.bringToFront();
+
+      const popup = await openToolbarPopup(context, `example.com:${port}`);
+      await popup.evaluate("document.getElementById('open-dashboard').click()");
+
+      let dashboard = null;
+      for (let attempt = 0; attempt < 80 && !dashboard; attempt += 1) {
+        dashboard = context.pages().find((page) =>
+          page.url().startsWith(DASHBOARD_URL) && page.url().includes("sourceHost=example.com")
+        ) ?? null;
+        if (!dashboard) await wait(200);
+      }
+      assert.ok(dashboard, "the popup must open the dashboard with the source host in its URL");
+      await waitForLoaded(dashboard);
+
+      assert.strictEqual(new URL(dashboard.url()).searchParams.get("sourceHost"), "example.com");
+      assert.strictEqual(await dashboard.locator("#target-select").inputValue(), "example.com");
+      assert.ok(await dashboard.locator("#cookies").isVisible(), "the site-only cookies panel must be visible");
+      assert.match(await dashboard.locator("#target-summary").innerText(), /example\.com/);
+      assert.doesNotMatch(
+        await dashboard.locator("#cookies-status").innerText(),
+        /Select a site above/,
+        "the cookies panel must be populated, not left in All sites text"
+      );
+    } finally {
+      await context.close();
+      await rm(userDataDir, { recursive: true, force: true });
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("falls back to All sites when the source hostname is absent, invalid, or not offered", async () => {
+    const { context, userDataDir } = await openExtensionPage(null);
+    try {
+      await workerOf(context);
+      // Three different code paths, all required to land on All sites:
+      // no query at all; a value normalizeHostname rejects outright; and a valid
+      // hostname that fillTargetSelect() cannot find among its options.
+      for (const query of ["", "?sourceHost=chrome", "?sourceHost=not-offered.test"]) {
+        const page = await context.newPage();
+        await page.goto(`${DASHBOARD_URL}${query}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await waitForLoaded(page);
+        assert.strictEqual(await page.locator("#target-select").inputValue(), "", `query ${query || "(none)"} must select All sites`);
+        assert.strictEqual(await page.locator("#cookies").isVisible(), false, "site-only panels stay hidden in All sites");
+        assert.match(await page.locator("#target-summary").innerText(), /Showing all sites/);
+        await page.close();
+      }
+    } finally {
+      await context.close();
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a manual picker choice across a live storage refresh", async () => {
+    const { context, userDataDir } = await openExtensionPage(null);
+    try {
+      const worker = await workerOf(context);
+      const now = Date.now();
+      const events = [
+        { hostname: "example.com", timestamp: now },
+        { hostname: "other.test", timestamp: now }
+      ];
+      await worker.evaluate(async (value) => chrome.storage.local.set({ historyEvents: value }), events);
+
+      const page = await context.newPage();
+      await page.goto(`${DASHBOARD_URL}?sourceHost=example.com`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await waitForLoaded(page);
+      assert.strictEqual(await page.locator("#target-select").inputValue(), "example.com");
+
+      await page.selectOption("#target-select", "other.test");
+      await page.waitForFunction(
+        () => document.getElementById("target-summary")?.textContent?.includes("other.test"),
+        null,
+        { timeout: 20_000 }
+      );
+
+      // A real storage change fires chrome.storage.onChanged -> refresh(). Adding a
+      // third site also proves the picker was rebuilt; B must survive that rebuild.
+      await worker.evaluate(async (value) => chrome.storage.local.set({ historyEvents: value }), [
+        ...events,
+        { hostname: "third.test", timestamp: Date.now() }
+      ]);
+      await page.waitForFunction(
+        () => [...document.querySelectorAll("#target-select option")].some((option) => option.value === "third.test"),
+        null,
+        { timeout: 20_000 }
+      );
+
+      assert.strictEqual(await page.locator("#target-select").inputValue(), "other.test", "the manual choice must survive the live refresh");
+      assert.match(await page.locator("#target-summary").innerText(), /other\.test/);
+    } finally {
+      await context.close();
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders Settings and the global allowlist the same with or without a seeded site", async () => {
+    const { context, userDataDir } = await openExtensionPage(null);
+    try {
+      const worker = await workerOf(context);
+      await worker.evaluate(async () => chrome.storage.local.set({
+        settings: { blockingEnabled: true, siteAllowlist: ["allowed.test"] },
+        historyEvents: [{ hostname: "example.com", timestamp: Date.now() }]
+      }));
+
+      const seeded = await context.newPage();
+      await seeded.goto(`${DASHBOARD_URL}?sourceHost=example.com`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      const all = await context.newPage();
+      await all.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await waitForLoaded(seeded);
+      await waitForLoaded(all);
+
+      assert.strictEqual(await seeded.locator("#target-select").inputValue(), "example.com", "the seeded page must really be in site mode");
+      assert.ok(await seeded.locator("#settings").isVisible(), "Settings stays visible in site mode");
+      assert.ok(await all.locator("#settings").isVisible(), "Settings stays visible in All sites mode");
+      assert.strictEqual(
+        await seeded.locator("#allowlist-list").innerText(),
+        await all.locator("#allowlist-list").innerText(),
+        "the global allowlist must not become site-scoped"
+      );
+      assert.match(await seeded.locator("#allowlist-list").innerText(), /allowed\.test/);
     } finally {
       await context.close();
       await rm(userDataDir, { recursive: true, force: true });

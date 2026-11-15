@@ -1386,12 +1386,15 @@ describe("WebGuard end to end", () => {
       { timeout: 15_000 }
     );
 
-    // Two reloads in quick succession used to append the rows twice.
-    const permissionsAfterReload = await page.locator("#permissions li").count();
-    if (permissionsAfterReload > 0) {
-      assert.ok(
-        permissionsAfterReload <= 4,
-        `permissions must not be duplicated, saw ${permissionsAfterReload} rows`
+    // Two reloads in quick succession used to append the rows twice. The popup
+    // paints one row per permission the site asked for, so the count is not fixed;
+    // what must hold is that no row is painted twice.
+    const permissionRows = await page.locator("#permissions li").allInnerTexts();
+    if (permissionRows.length > 0) {
+      assert.strictEqual(
+        new Set(permissionRows).size,
+        permissionRows.length,
+        `permissions must not be duplicated, saw ${JSON.stringify(permissionRows)}`
       );
     }
     const cookieRowCount = await page.locator("#cookies li").count();

@@ -109,3 +109,8 @@ test("resolveSiteMode reports off, strict or basic, and off always wins", () => 
   assert.equal(resolveSiteMode("", settings), "basic");
   assert.equal(resolveSiteMode("x.test", null), "basic");
 });
+
+test("drops a bare multi-label public suffix from the allowlist", () => {
+  const settings = normalizeSettings({ siteAllowlist: ["co.uk", "example.co.uk", "localhost", "example.com"] });
+  assert.deepEqual(settings.siteAllowlist, ["example.co.uk", "localhost", "example.com"]);
+});

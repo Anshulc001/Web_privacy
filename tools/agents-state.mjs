@@ -89,6 +89,21 @@ export async function buildStateBlock() {
   return lines.join("\n");
 }
 
+/**
+ * Line endings are not content. A Windows checkout stores AGENTS.md with CRLF
+ * (core.autocrlf=true) while this generator joins lines with "\n", so comparing
+ * the raw strings reports "stale" for a block whose values all match. Normalising
+ * line endings first keeps the guard honest: anything else still counts as drift.
+ */
+export function normalizeLineEndings(text) {
+  return text.replace(/\r\n/g, "\n");
+}
+
+/** True when `markdown` already contains `block`, ignoring line-ending style only. */
+export function stateBlockMatches(markdown, block) {
+  return normalizeLineEndings(markdown).includes(normalizeLineEndings(block));
+}
+
 /** Replaces the marked block, refusing to guess when the markers are missing. */
 export function replaceStateBlock(markdown, block) {
   const start = markdown.indexOf(BEGIN_MARKER);
@@ -119,7 +134,7 @@ async function main() {
     return;
   }
   if (mode === "--check") {
-    if (markdown.includes(block)) {
+    if (stateBlockMatches(markdown, block)) {
       console.log("AGENTS.md state block is current.");
       return;
     }

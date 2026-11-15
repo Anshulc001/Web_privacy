@@ -297,3 +297,99 @@ test("no tracking-parameter rule is added while blocking is off", async () => {
   await manager.setAllowlist(["allowed.test"]);
   assert.ok(!dnr.calls[0][1].addRules.some((rule) => rule.id === TRACKING_PARAM_RULE_ID));
 });
+
+test("allowlist refuses a bare public suffix instead of allowing a whole registry", async () => {
+  const dnr = fakeDnr();
+  const settings = fakeSettings();
+  const manager = createBlockingManager(dnr, settings);
+  await manager.setAllowlist(["co.uk", "example.com"]);
+  assert.deepEqual(settings.state.siteAllowlist, ["example.com"]);
+  const update = dnr.calls[0][1];
+  assert.ok(!update.addRules.some((rule) => rule.condition?.urlFilter === "||co.uk^"));
+  // Two rules for example.com plus the tracking-parameter redirect.
+  assert.equal(update.addRules.length, 3);
+});
+
+/** Every rule added by any dynamic update in this run, in install order. */
+function installedRules(dnr) {
+  return dnr.calls.filter((call) => call[0] === "dynamic").flatMap((call) => call[1].addRules);
+}
+
+test("a stored main_frame + party rule is dropped instead of installed", async () => {
+  // The stored-startup path, not the download path: the reader returns a payload
+  // shaped exactly like remoteBlockingHosts() reads from chrome.storage.local, and
+  // validateBlockingData is never involved. This is the Phase 0 adversarial case
+  // with the assertion inverted now that the entry is revalidated.
+  const dnr = fakeDnr();
+  const stored = {
+    hosts: ["tracker.test"],
+    hostRules: [{ host: "unsafe.test", condition: { resourceTypes: ["main_frame"], domainType: "thirdParty" } }]
+  };
+  const manager = createBlockingManager(dnr, fakeSettings(), async () => stored);
+  await manager.setEnabled(true);
+  const rules = installedRules(dnr);
+  assert.ok(!rules.some((rule) => rule.condition?.urlFilter === "||unsafe.test^"), "the unsafe stored rule must never reach DNR");
+  // Dropping the bad entry must not take the rest of the stored list down.
+  assert.ok(rules.some((rule) => rule.condition?.urlFilter === "||tracker.test^"), "the safe stored host must still be installed");
+});
+
+test("drops stored main_frame rules with excluded initiators or mixed types, keeping the rest", async () => {
+  const dnr = fakeDnr();
+  const manager = createBlockingManager(dnr, fakeSettings());
+  const installed = await manager.applyRemoteHosts(
+    ["tracker.test"],
+    true,
+    [
+      { host: "excluded.test", condition: { resourceTypes: ["main_frame"], excludedInitiatorDomains: ["example.com"] } },
+      { host: "mixed.test", condition: { resourceTypes: ["main_frame", "script"], initiatorDomains: ["example.com"] } },
+      { host: "both.test", condition: { resourceTypes: ["main_frame", "sub_frame"], domainType: "thirdParty", excludedInitiatorDomains: ["example.com"] } },
+      { host: "pixel.test", condition: { resourceTypes: ["script", "image"], domainType: "thirdParty" } }
+    ]
+  );
+  assert.equal(installed, 2, "only the safe host and the legitimate qualified rule may be installed");
+  const filters = installedRules(dnr).map((rule) => rule.condition.urlFilter).sort();
+  assert.deepEqual(filters, ["||pixel.test^", "||tracker.test^"]);
+});
+
+test("still installs legitimate stored qualified rules unchanged", async () => {
+  const dnr = fakeDnr();
+  const manager = createBlockingManager(dnr, fakeSettings());
+  const installed = await manager.applyRemoteHosts(
+    [],
+    true,
+    [
+      // A type-only main_frame rule is narrower than the wide host block and stays valid.
+      { host: "navigation.test", condition: { resourceTypes: ["main_frame"] } },
+      { host: "pixel.test", condition: { resourceTypes: ["sub_frame", "script"], domainType: "thirdParty" } }
+    ]
+  );
+  assert.equal(installed, 2);
+  const rules = installedRules(dnr);
+  const navigation = rules.find((rule) => rule.condition.urlFilter === "||navigation.test^");
+  assert.deepEqual(navigation.condition.resourceTypes, ["main_frame"]);
+  const pixel = rules.find((rule) => rule.condition.urlFilter === "||pixel.test^");
+  assert.deepEqual(pixel.condition.resourceTypes, ["sub_frame", "script"]);
+  assert.equal(pixel.condition.domainType, "thirdParty");
+});
+
+test("drops stored conditions the old shape-only check used to install", async () => {
+  // Deliberate blast radius: canonical validation also rejects an unknown party
+  // value, an empty initiator list, unknown keys and unknown resource types. These
+  // all passed the previous loose check, so the stricter seam is visible here
+  // rather than discovered in a real profile later.
+  const dnr = fakeDnr();
+  const manager = createBlockingManager(dnr, fakeSettings());
+  const installed = await manager.applyRemoteHosts(
+    [],
+    true,
+    [
+      { host: "party.test", condition: { resourceTypes: ["script"], domainType: "sometimes" } },
+      { host: "empty.test", condition: { resourceTypes: ["script"], initiatorDomains: [] } },
+      { host: "extra.test", condition: { resourceTypes: ["script"], unknownKey: true } },
+      { host: "type.test", condition: { resourceTypes: ["script", "bogus"] } },
+      { host: "pixel.test", condition: { resourceTypes: ["script"], domainType: "thirdParty" } }
+    ]
+  );
+  assert.equal(installed, 1, "only the canonical rule may be installed");
+  assert.deepEqual(installedRules(dnr).map((rule) => rule.condition.urlFilter), ["||pixel.test^"]);
+});
